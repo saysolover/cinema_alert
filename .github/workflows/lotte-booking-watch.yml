@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: lotte-booking-watch
+  cancel-in-progress: false
+
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
@@ -150,6 +154,24 @@ jobs:
             throw lastErr;
           }
 
+          // 롯데 예매 캘린더(약 6주치)에서 상영이 잡힌 날짜(IsPlayDate=Y)만 골라 조회 대상으로 삼는다.
+          // 선예매로 먼저 열리는 먼 날짜까지 잡을 수 있고, 상영 없는 날짜는 호출을 아낀다.
+          // 캘린더 조회가 실패하면 기존처럼 오늘~+7일로 대체.
+          async function getBookableDates() {
+            try {
+              const fd = new URLSearchParams();
+              fd.append('paramList', JSON.stringify({ MethodName: 'GetTicketingPageTOBE', channelType: 'HO', osType: 'W', osVersion: 'bot', memberOnNo: '0' }));
+              const r = await fetchWithRetry('https://www.lottecinema.co.kr/LCWS/Ticketing/TicketingData.aspx', { method: 'POST', body: fd });
+              const j = await r.json();
+              const items = (j.MoviePlayDates && j.MoviePlayDates.Items && j.MoviePlayDates.Items.Items) || [];
+              const ds = items.filter(x => x.IsPlayDate === 'Y').map(x => x.PlayDate);
+              if (ds.length > 0) return ds;
+            } catch (e) {
+              console.log(`  (예매 캘린더 조회 실패, 오늘~+7일로 대체: ${e.message})`);
+            }
+            return nextDates(7);
+          }
+
           async function getPlaySequence(cinemaID, movieCd, playDate) {
             const fd = new URLSearchParams();
             fd.append('paramList', JSON.stringify({
@@ -177,7 +199,7 @@ jobs:
 
             const state = fs.existsSync('lotte_state.json') ? JSON.parse(fs.readFileSync('lotte_state.json', 'utf8')) : {};
             let stateChanged = false;
-            const dates = nextDates(7);
+            let dates = null; // 조회할 게 있을 때만 캘린더를 한 번 가져온다
 
             for (const keyword of keywords) {
               const movieCd = cache[keyword];
@@ -185,6 +207,8 @@ jobs:
                 console.log(`"${keyword}": movieCd 아직 미확인 — 스킵 (다음 실행에 재시도)`);
                 continue;
               }
+              if (theaters.every(t => state[`${keyword}|${t.name}`] === true)) continue;
+              if (!dates) dates = await getBookableDates();
 
               for (const theater of theaters) {
                 const stateKey = `${keyword}|${theater.name}`;
@@ -230,7 +254,22 @@ jobs:
           done
           if [ -n "$TARGETS" ] && [ -n "$(git status --porcelain -- $TARGETS)" ]; then
             git commit -m "chore: update Lotte Cinema booking state/cache"
-            git push
+            # 다른 워크플로우가 먼저 push했을 수 있으므로 rebase 후 push, 실패 시 재시도.
+            for i in 1 2 3; do
+              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+              sleep 3
+            done
+            exit 1
           else
             echo "상태 변경 없음"
           fi
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -H 'Content-Type: application/json' \
+            -d "{\"content\":\"⚠️ 롯데시네마 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" || true

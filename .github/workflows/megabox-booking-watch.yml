@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: megabox-booking-watch
+  cancel-in-progress: false
+
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
@@ -179,7 +183,6 @@ jobs:
               return;
             }
 
-            const areaCds = [...new Set(theaters.map(t => t.areaCd))];
             const state = fs.existsSync('megabox_state.json') ? JSON.parse(fs.readFileSync('megabox_state.json', 'utf8')) : {};
             let stateChanged = false;
             const dates = nextDates(7);
@@ -191,9 +194,13 @@ jobs:
                 continue;
               }
 
+              // 이미 알림 나간 극장은 조회에서 제외 (전부 완료면 API 호출 자체를 생략)
+              const pending = theaters.filter(t => state[`${keyword}|${t.name}`] !== true);
+              if (pending.length === 0) continue;
+
               const found = {};
-              for (const areaCd of areaCds) {
-                const targets = theaters.filter(t => t.areaCd === areaCd);
+              for (const areaCd of new Set(pending.map(t => t.areaCd))) {
+                const targets = pending.filter(t => t.areaCd === areaCd);
                 for (const playDe of dates) {
                   const list = await getSchedule(movieNo, playDe, areaCd);
                   if (list.length === 0) continue;
@@ -243,7 +250,22 @@ jobs:
           done
           if [ -n "$TARGETS" ] && [ -n "$(git status --porcelain -- $TARGETS)" ]; then
             git commit -m "chore: update Megabox booking state/cache"
-            git push
+            # 다른 워크플로우가 먼저 push했을 수 있으므로 rebase 후 push, 실패 시 재시도.
+            for i in 1 2 3; do
+              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+              sleep 3
+            done
+            exit 1
           else
             echo "상태 변경 없음"
           fi
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -H 'Content-Type: application/json' \
+            -d "{\"content\":\"⚠️ 메가박스 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" || true
