@@ -1,0 +1,37 @@
+name: 스케줄 유지 (keepalive)
+
+# 공개 저장소는 60일간 활동이 없으면 예약 워크플로우가 자동 비활성화된다.
+# 알림이 끝나 상태 파일이 안 바뀌는 시기에도 감시가 멈추지 않도록 주 1회 활동을 만든다.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Re-enable all workflows (resets inactivity timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow list --all --json id -q '.[].id' | while read -r id; do
+            gh workflow enable "$id" || true
+          done
+
+      - name: Empty commit as extra activity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive"
+          for i in 1 2 3; do
+            git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+            sleep 3
+          done
+          exit 1
