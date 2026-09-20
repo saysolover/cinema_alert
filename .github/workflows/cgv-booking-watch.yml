@@ -82,15 +82,18 @@ jobs:
             const silent = entry === true; // 예전 방식 상태는 알림 없이 현재 상태를 기준선으로만 채택
             const next = entry && entry !== true ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
             const events = [];
+            // cur에는 "조회에 성공한 날짜"만 들어 있다(실패한 날짜는 없음). 0회는 그 날짜가 닫혀 있다는 뜻.
             for (const [d, c] of Object.entries(cur)) {
-              if (c <= 0) continue;
               const p = next.dates[d];
+              if (c <= 0) { delete next.dates[d]; continue; } // 닫힌 날짜는 기준선에서 제거 → 다시 열리면 새로 알림
               if (p === undefined) {
                 if (!silent) events.push({ date: d, count: c, kind: 'new' });
                 next.dates[d] = c;
               } else if (!silent && c >= p + GROWTH) {
                 events.push({ date: d, count: c, kind: 'more', added: c - p });
                 next.dates[d] = c;
+              } else if (c < p / 2) {
+                next.dates[d] = c; // 회차가 절반 아래로 급감하면 기준선을 낮춰, 부풀려진 기준선이 이후 알림을 막지 않게 함
               }
             }
             for (const d of Object.keys(next.dates)) if (d < today) delete next.dates[d];
@@ -148,13 +151,13 @@ jobs:
                   const r = await fetch(u);
                   return (await r.json()).data || [];
                 } catch (e) {
-                  if (i === 2) return [];
+                  if (i === 2) return null; // 실패는 "0회(닫힘)"와 구분해서 이번 판정에서 제외한다
                   await new Promise(res => setTimeout(res, 2000));
                 }
               }
             }, url);
 
-            const chart = await getJson('https://cgv.co.kr/api/v1/booking/searchAtktTopPostrList?coCd=A420');
+            const chart = (await getJson('https://cgv.co.kr/api/v1/booking/searchAtktTopPostrList?coCd=A420')) || [];
             let stateChanged = false;
 
             for (const keyword of todo) {
@@ -170,13 +173,21 @@ jobs:
                 if (!shouldCheck(entry, today, followUpRun)) continue;
 
                 const days = await getJson(`https://cgv.co.kr/api/v1/booking/searchSiteScnscYmdListByMov?coCd=A420&movNo=${movie.movNo}&siteNo=${siteNo}`);
+                if (days === null) {
+                  console.log(`"${keyword}" @ CGV ${siteName}: 상영일 조회 실패 — 이번엔 스킵`);
+                  continue;
+                }
                 const cur = {};
+                const failed = new Set();
                 for (const d of days) {
                   const list = await getJson(`https://cgv.co.kr/api/v1/booking/searchMovScnInfo?coCd=A420&siteNo=${siteNo}&scnYmd=${d.scnYmd}&movNo=${movie.movNo}&rtctlScopCd=08`);
+                  if (list === null) { failed.add(fmtDate(d.scnYmd)); continue; }
                   cur[fmtDate(d.scnYmd)] = list.filter(x =>
                     (x.movNo === movie.movNo || (x.prodNm || '').includes(keyword)) && !SPECIAL_RE.test(x.prodNm || '')
                   ).length;
                 }
+                // 상영일 목록에서 빠진 날짜(이전에 열려 있었음)는 닫힌 것으로 본다. 단, 이번에 조회 실패한 날짜는 제외.
+                for (const d of Object.keys((entry && entry.dates) || {})) if (!(d in cur) && !failed.has(d) && d >= today) cur[d] = 0;
 
                 const { events, next } = evaluate(entry, cur, today);
                 if (events.length > 0) {
@@ -190,7 +201,8 @@ jobs:
                 } else {
                   console.log(`"${keyword}" @ CGV ${siteName}: 새 일반 회차 없음 (조회된 상영일 ${days.length}개)`);
                 }
-                if (events.length > 0 || entry === true) {
+                // 알림이 났거나, 예전 상태 이관이거나, 추적 중 기준선이 바뀐 경우에만 저장
+                if (events.length > 0 || entry === true || (entry && JSON.stringify(next) !== JSON.stringify(entry))) {
                   state[stateKey] = next;
                   stateChanged = true;
                 }

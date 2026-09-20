@@ -149,15 +149,18 @@ jobs:
             const silent = entry === true; // 예전 방식 상태는 알림 없이 현재 상태를 기준선으로만 채택
             const next = entry && entry !== true ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
             const events = [];
+            // cur에는 "조회에 성공한 날짜"만 들어 있다(실패한 날짜는 없음). 0회는 그 날짜가 닫혀 있다는 뜻.
             for (const [d, c] of Object.entries(cur)) {
-              if (c <= 0) continue;
               const p = next.dates[d];
+              if (c <= 0) { delete next.dates[d]; continue; } // 닫힌 날짜는 기준선에서 제거 → 다시 열리면 새로 알림
               if (p === undefined) {
                 if (!silent) events.push({ date: d, count: c, kind: 'new' });
                 next.dates[d] = c;
               } else if (!silent && c >= p + GROWTH) {
                 events.push({ date: d, count: c, kind: 'more', added: c - p });
                 next.dates[d] = c;
+              } else if (c < p / 2) {
+                next.dates[d] = c; // 회차가 절반 아래로 급감하면 기준선을 낮춰, 부풀려진 기준선이 이후 알림을 막지 않게 함
               }
             }
             for (const d of Object.keys(next.dates)) if (d < today) delete next.dates[d];
@@ -232,7 +235,7 @@ jobs:
               return (j.PlaySeqsHeader && j.PlaySeqsHeader.Items) || [];
             } catch (e) {
               console.log(`  (${playDate} 조회 실패, 이번엔 스킵: ${e.message})`);
-              return [];
+              return null; // 실패는 "0회(닫힘)"와 구분해서 그 날짜를 이번 판정에서 제외한다
             }
           }
 
@@ -268,6 +271,7 @@ jobs:
                 const cur = {};
                 for (const playDate of dates) {
                   const items = await getPlaySequence(theater.cinemaID, movieCd, playDate);
+                  if (items === null) continue;
                   cur[playDate] = items.filter(it => !isSpecial(it)).length;
                 }
 
@@ -282,7 +286,8 @@ jobs:
                 } else {
                   console.log(`"${keyword}" @ 롯데시네마 ${theater.name}: 새 일반 회차 없음`);
                 }
-                if (events.length > 0 || entry === true) {
+                // 알림이 났거나, 예전 상태 이관이거나, 추적 중 기준선이 바뀐 경우에만 저장
+                if (events.length > 0 || entry === true || (entry && JSON.stringify(next) !== JSON.stringify(entry))) {
                   state[stateKey] = next;
                   stateChanged = true;
                 }
