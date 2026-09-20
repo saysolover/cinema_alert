@@ -190,13 +190,14 @@ jobs:
                 const stateKey = `${keyword}|${theater.name}`;
                 if (state[stateKey] === true) continue;
 
-                let openDate = null;
+                const openDates = [];
                 for (const playDate of dates) {
                   const items = await getPlaySequence(theater.cinemaID, movieCd, playDate);
-                  if (items.length > 0) { openDate = playDate; break; }
+                  if (items.length > 0) openDates.push(playDate);
                 }
 
-                if (openDate) {
+                if (openDates.length > 0) {
+                  const openDate = openDates.join(', ');
                   console.log(`"${keyword}" @ 롯데시네마 ${theater.name}: 예매 오픈 확인 (${openDate})`);
                   const content = `🎬 예매 오픈!\n영화: ${keyword}\n극장: 롯데시네마 ${theater.name}\n상영일: ${openDate}`;
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
