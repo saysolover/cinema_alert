@@ -264,12 +264,15 @@ jobs:
                   const list = await getSchedule(movieNo, playDe, areaCd);
                   if (list === null) continue;
                   for (const theater of targets) {
-                    // 응답 항목 자신의 상영일(playDe)이 요청한 날짜와 같고, 실제로 예매 가능한 회차만 센다.
+                    // 응답 항목 자신의 영화(movieNo/rpstMovieNo)가 요청한 영화이고, 상영일(playDe)이 요청한 날짜와 같고,
+                    // 실제로 예매 가능한 회차만 센다. (서버가 요청한 영화 대신 다른 영화 회차를 섞어 내려준 사례 확인됨:
+                    // "가능한 사랑" 조회에 "암살자(들)" 회차가 포함되어 수원스타필드에서 허위 알림 발생)
                     const hits = list.filter(it =>
                       (it.brchNm || '').includes(theater.name) && it.playDe === playDe &&
+                      [it.movieNo, it.rpstMovieNo].includes(movieNo) &&
                       it.bokdAbleAt === 'Y' && it.brchBokdUnableAt !== 'Y' && !isSpecial(it));
                     (counts[theater.name] = counts[theater.name] || {})[fmtDate(playDe)] = hits.length;
-                    if (hits.length > 0) (samples[theater.name] = samples[theater.name] || {})[fmtDate(playDe)] = hits.slice(0, 3).map(it => `${it.brchNm} ${it.playStartTime} ${it.movieNm} bokd=${it.bokdAbleAt}`);
+                    if (hits.length > 0) (samples[theater.name] = samples[theater.name] || {})[fmtDate(playDe)] = hits.slice(0, 3).map(it => `${it.brchNm} ${it.playStartTime} ${it.movieNm}(${it.movieNo}/${it.rpstMovieNo}) bokd=${it.bokdAbleAt}`);
                   }
                 }
               }

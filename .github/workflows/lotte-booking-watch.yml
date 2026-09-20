@@ -272,7 +272,8 @@ jobs:
                 for (const playDate of dates) {
                   const items = await getPlaySequence(theater.cinemaID, movieCd, playDate);
                   if (items === null) continue;
-                  cur[playDate] = items.filter(it => !isSpecial(it)).length;
+                  // 요청한 영화의 회차만 센다(메가박스에서 다른 영화 회차가 섞여 내려온 사례가 있어 롯데에도 동일 방어).
+                  cur[playDate] = items.filter(it => String(it.RepresentationMovieCode) === String(movieCd) && !isSpecial(it)).length;
                 }
 
                 const { events, next } = evaluate(entry, cur, today);
