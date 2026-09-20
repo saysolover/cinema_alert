@@ -164,6 +164,8 @@ jobs:
             fd.append('firstAt', 'N');
             fd.append('playDe', playDe);
             fd.append('areaCd', areaCd);
+            // 짧은 시간에 연속 호출하면 연결을 끊는 것이 확인되어 호출 사이에 간격을 둔다.
+            await new Promise(r => setTimeout(r, 300));
             try {
               const r = await fetchWithRetry('https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do', { method: 'POST', body: fd });
               const j = await r.json();
@@ -185,7 +187,8 @@ jobs:
 
             const state = fs.existsSync('megabox_state.json') ? JSON.parse(fs.readFileSync('megabox_state.json', 'utf8')) : {};
             let stateChanged = false;
-            const dates = nextDates(7);
+            // 메가박스 상영시간표 화면의 날짜 띠가 오늘~+14일까지라 예매 한도도 그 범위로 판단(브라우저로 확인).
+            const dates = nextDates(14);
 
             for (const keyword of keywords) {
               const movieNo = cache[keyword];
