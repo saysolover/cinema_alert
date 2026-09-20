@@ -128,6 +128,56 @@ jobs:
             return out;
           }
 
+          const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
+          const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
+          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
+          // 메가박스는 특별 상영이 cttsTyDivCdNm=무대인사, movieNm="[무대인사] 제목" 형태로 내려옴(직접 확인).
+          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
+          const isSpecial = it => SPECIAL_RE.test([it.movieNm, it.cttsTyDivCdNm, it.movieCttsNm].filter(Boolean).join(' ')) || /^\[/.test(it.movieNm || '');
+
+          const kstToday = () => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+          const fmtDate = s => s.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+
+          // state[key]: 없음(미알림) | true(예전 방식으로 알림 완료) | { since, dates: { 'YYYY-MM-DD': 일반 회차 수 } }
+          // 첫 알림 이후(추적 단계)에는 15분에 한 번만 조회하고, FOLLOW_DAYS가 지나면 추적을 끝낸다.
+          function shouldCheck(entry, today, followUpRun) {
+            if (!entry) return true;
+            if (entry !== true && daysBetween(entry.since, today) > FOLLOW_DAYS) return false;
+            return followUpRun;
+          }
+
+          function evaluate(entry, cur, today) {
+            const silent = entry === true; // 예전 방식 상태는 알림 없이 현재 상태를 기준선으로만 채택
+            const next = entry && entry !== true ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
+            const events = [];
+            for (const [d, c] of Object.entries(cur)) {
+              if (c <= 0) continue;
+              const p = next.dates[d];
+              if (p === undefined) {
+                if (!silent) events.push({ date: d, count: c, kind: 'new' });
+                next.dates[d] = c;
+              } else if (!silent && c >= p + GROWTH) {
+                events.push({ date: d, count: c, kind: 'more', added: c - p });
+                next.dates[d] = c;
+              }
+            }
+            for (const d of Object.keys(next.dates)) if (d < today) delete next.dates[d];
+            return { events, next };
+          }
+
+          function buildMessage(movie, label, theater, events) {
+            const news = events.filter(e => e.kind === 'new');
+            const more = events.filter(e => e.kind === 'more');
+            const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
+            const dates = news.length
+              ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
+              : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
+            let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
+            return msg;
+          }
+
           function nextDates(n) {
             const now = new Date(Date.now() + 9 * 60 * 60 * 1000); // KST
             const out = [];
@@ -187,6 +237,8 @@ jobs:
 
             const state = fs.existsSync('megabox_state.json') ? JSON.parse(fs.readFileSync('megabox_state.json', 'utf8')) : {};
             let stateChanged = false;
+            const today = kstToday();
+            const followUpRun = new Date().getUTCMinutes() % 15 < 3;
             // 메가박스 상영시간표 화면의 날짜 띠가 오늘~+14일까지라 예매 한도도 그 범위로 판단(브라우저로 확인).
             const dates = nextDates(14);
 
@@ -197,40 +249,41 @@ jobs:
                 continue;
               }
 
-              // 이미 알림 나간 극장은 조회에서 제외 (전부 완료면 API 호출 자체를 생략)
-              const pending = theaters.filter(t => state[`${keyword}|${t.name}`] !== true);
+              // 조회가 필요 없는 극장(추적 대기/종료)은 제외 — 전부 해당하면 API 호출 자체를 생략
+              const pending = theaters.filter(t => shouldCheck(state[`${keyword}|${t.name}`], today, followUpRun));
               if (pending.length === 0) continue;
 
-              const found = {};
+              const counts = {}; // counts[극장이름][YYYY-MM-DD] = 일반 회차 수
               for (const areaCd of new Set(pending.map(t => t.areaCd))) {
                 const targets = pending.filter(t => t.areaCd === areaCd);
                 for (const playDe of dates) {
                   const list = await getSchedule(movieNo, playDe, areaCd);
                   if (list.length === 0) continue;
                   for (const theater of targets) {
-                    if (list.some(item => (item.brchNm || '').includes(theater.name))) {
-                      (found[theater.name] = found[theater.name] || []).push(playDe);
-                    }
+                    const n = list.filter(it => (it.brchNm || '').includes(theater.name) && !isSpecial(it)).length;
+                    if (n > 0) (counts[theater.name] = counts[theater.name] || {})[fmtDate(playDe)] = n;
                   }
                 }
               }
 
-              for (const theater of theaters) {
+              for (const theater of pending) {
                 const stateKey = `${keyword}|${theater.name}`;
-                if (state[stateKey] === true) continue;
+                const entry = state[stateKey];
 
-                if (found[theater.name]) {
-                  const displayDate = found[theater.name].map(d => d.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')).join(', ');
-                  console.log(`"${keyword}" @ 메가박스 ${theater.name}: 예매 오픈 확인 (${displayDate})`);
-                  const content = `🎬 예매 오픈!\n영화: ${keyword}\n극장: 메가박스 ${theater.name}\n상영일: ${displayDate}`;
+                const { events, next } = evaluate(entry, counts[theater.name] || {}, today);
+                if (events.length > 0) {
+                  console.log(`"${keyword}" @ 메가박스 ${theater.name}: ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: buildMessage(keyword, '메가박스', theater.name, events) })
                   });
                   console.log('Discord 응답 상태:', res.status);
-                  state[stateKey] = true;
-                  stateChanged = true;
                 } else {
-                  console.log(`"${keyword}" @ 메가박스 ${theater.name}: 아직 미오픈`);
+                  console.log(`"${keyword}" @ 메가박스 ${theater.name}: 새 일반 회차 없음`);
+                }
+                if (events.length > 0 || entry === true) {
+                  state[stateKey] = next;
+                  stateChanged = true;
                 }
               }
             }
