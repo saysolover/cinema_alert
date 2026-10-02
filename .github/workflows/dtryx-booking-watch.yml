@@ -165,6 +165,7 @@ jobs:
             if (!pageRes.ok) throw new Error(`movie.do HTTP ${pageRes.status}` + (pageRes.status === 403 ? ' (중계 토큰 불일치 가능성)' : ''));
             const html = await pageRes.text();
             const cgid = (html.match(/id="cgid"[^>]*value="([^"]+)"/) || html.match(/name="cgid"[^>]*value="([^"]+)"/) || [])[1];
+            if (!cgid) console.log(`movie.do 응답: HTTP ${pageRes.status}, ${html.length}자, type=${pageRes.headers.get('content-type')}, 앞부분=${JSON.stringify(html.slice(0, 300))}, cgid 언급=${html.includes('cgid')}`);
             if (!cgid) throw new Error('movie.do 페이지에서 cgid를 찾지 못함 (페이지 구조 변경 가능성)');
 
             const headers = { 'X-Requested-With': 'XMLHttpRequest', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.dtryx.com/reserve/movie.do', ...RELAY_HEADERS };
