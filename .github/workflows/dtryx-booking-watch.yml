@@ -1,0 +1,257 @@
+name: 디트릭스 독립영화관 예매 오픈 감시
+
+on:
+  schedule:
+    - cron: '3-59/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '시험 모드: Discord 알림과 상태 저장 없이 판정 결과만 로그에 출력'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dtryx-booking-watch
+  cancel-in-progress: false
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 브라우저(Playwright) 없이 요청만 사용 — 설치 단계가 없어 apt 미러 장애의 영향을 받지 않는다.
+      - name: Check Dtryx booking status and notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          cat > check_dtryx.js << 'SCRIPT_EOF'
+          const fs = require('fs');
+
+          const STATE_FILE = 'dtryx_state.json';
+          const BASE = 'https://www.dtryx.com';
+          const DRY = process.env.DRY_RUN === 'true';
+
+          const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
+          const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
+          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
+          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
+          const isSpecial = it => SPECIAL_RE.test([it.MovieNmNat, it.MovieNm, it.ScreenTypeNmNat].filter(Boolean).join(' '));
+
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const norm = s => (s || '').replace(/[\s()]/g, '').toLowerCase();
+          const kstToday = () => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+
+          function loadLines(file) {
+            if (!fs.existsSync(file)) return [];
+            return fs.readFileSync(file, 'utf8').split('\n').map(s => s.trim()).filter(Boolean);
+          }
+
+          // theaters.txt: DTRYX,이름,브랜드코드|영화관코드   예) DTRYX,라이카시네마,spacedog|000072
+          function loadTheaters() {
+            const out = [];
+            for (const line of loadLines('theaters.txt')) {
+              const [chain, name, code] = line.split(',').map(s => s.trim());
+              if (chain !== 'DTRYX' || !name || !code) continue;
+              const [brandCd, cinemaCd] = code.split('|');
+              if (brandCd && cinemaCd) out.push({ name, brandCd, cinemaCd });
+            }
+            return out;
+          }
+
+          // state[key]: 없음(미알림) | { since, dates: { 'YYYY-MM-DD': 일반 회차 수 } }
+          // 첫 알림 이후(추적 단계)에는 15분에 한 번만 조회하고, FOLLOW_DAYS가 지나면 추적을 끝낸다.
+          function shouldCheck(entry, today, followUpRun) {
+            if (!entry) return true;
+            if (daysBetween(entry.since, today) > FOLLOW_DAYS) return false;
+            return followUpRun;
+          }
+
+          // cur에는 "조회에 성공한 날짜"만 들어 있다(실패한 날짜는 없음). 0회는 그 날짜가 닫혀 있다는 뜻.
+          function evaluate(entry, cur, today) {
+            const next = entry ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
+            const events = [];
+            for (const [d, c] of Object.entries(cur)) {
+              const p = next.dates[d];
+              if (c <= 0) { delete next.dates[d]; continue; }
+              if (p === undefined) {
+                events.push({ date: d, count: c, kind: 'new' });
+                next.dates[d] = c;
+              } else if (c >= p + GROWTH) {
+                events.push({ date: d, count: c, kind: 'more', added: c - p });
+                next.dates[d] = c;
+              } else if (c < p / 2) {
+                next.dates[d] = c;
+              }
+            }
+            for (const d of Object.keys(next.dates)) if (d < today) delete next.dates[d];
+            return { events, next };
+          }
+
+          function buildMessage(movie, label, theater, events) {
+            const news = events.filter(e => e.kind === 'new');
+            const more = events.filter(e => e.kind === 'more');
+            const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
+            const dates = news.length
+              ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
+              : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
+            let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
+            return msg;
+          }
+
+          async function fetchWithRetry(url, options, attempts = 3, delayMs = 2000) {
+            let lastErr;
+            for (let i = 0; i < attempts; i++) {
+              try { return await fetch(url, options); }
+              catch (e) { lastErr = e; if (i < attempts - 1) await sleep(delayMs); }
+            }
+            throw lastErr;
+          }
+
+          let requestCount = 0;
+          // 실패는 null로 돌려 "0회(닫힘)"와 구분한다.
+          async function getJson(url, headers) {
+            for (let i = 0; i < 3; i++) {
+              try {
+                requestCount++;
+                await sleep(300); // 연속 호출 간격
+                const r = await fetchWithRetry(url, { headers });
+                return await r.json();
+              } catch (e) {
+                if (i === 2) { console.log(`  (조회 실패, 이번엔 스킵: ${e.message})`); return null; }
+                await sleep(2000);
+              }
+            }
+          }
+
+          (async () => {
+            const keywords = loadLines('keywords.txt');
+            const theaters = loadTheaters();
+            if (keywords.length === 0 || theaters.length === 0) {
+              console.log('keywords.txt 또는 theaters.txt(DTRYX)에 감시 대상이 없음. 종료.');
+              return;
+            }
+
+            const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
+            const today = kstToday();
+            const followUpRun = new Date().getUTCMinutes() % 15 < 3;
+            const pendingKeys = k => theaters.filter(t => shouldCheck(state[`${k}|${t.name}`], today, followUpRun));
+            if (!keywords.some(k => pendingKeys(k).length)) {
+              console.log('이번 실행에서 조회할 대상 없음 (추적 대기 또는 추적 종료).');
+              return;
+            }
+            if (DRY) console.log('[시험 모드] 알림 전송과 상태 저장을 하지 않습니다.');
+
+            // 접속 식별값(cgid)은 만료될 수 있어 매 실행마다 예매 페이지에서 새로 받는다.
+            requestCount++;
+            const pageRes = await fetchWithRetry(`${BASE}/reserve/movie.do`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+            const html = await pageRes.text();
+            const cgid = (html.match(/id="cgid"[^>]*value="([^"]+)"/) || html.match(/name="cgid"[^>]*value="([^"]+)"/) || [])[1];
+            if (!cgid) throw new Error('movie.do 페이지에서 cgid를 찾지 못함 (페이지 구조 변경 가능성)');
+
+            const headers = { 'X-Requested-With': 'XMLHttpRequest', 'User-Agent': 'Mozilla/5.0', 'Referer': `${BASE}/reserve/movie.do` };
+            const qs = (t, movieCd, playSDT) =>
+              `cgid=${cgid}&ssid=&tokn=&hold=&BrandCd=${t.brandCd}&CinemaCd=${t.cinemaCd}&MovieCd=${movieCd}&PlaySDT=${playSDT}&Sort=boxoffice&ScreenCd=&ShowSeq=&TabBrandCd=dtryx`;
+
+            let stateChanged = false;
+
+            for (const theater of theaters) {
+              const todoKeywords = keywords.filter(k => shouldCheck(state[`${k}|${theater.name}`], today, followUpRun));
+              if (todoKeywords.length === 0) continue;
+
+              const list = await getJson(`${BASE}/reserve/main_list.do?${qs(theater, 'all', 'all')}`, headers);
+              if (!list || !Array.isArray(list.MovieList)) {
+                console.log(`${theater.name}: 상영작 목록 조회 실패 — 스킵`);
+                continue;
+              }
+              const dates = (list.PlaySdtList || []).filter(d => d.HiddenYn !== 'Y').map(d => d.PlaySDT);
+              console.log(`${theater.name}: 상영작 ${list.MovieList.length}편, 예매 가능 날짜 ${dates.length}개`);
+
+              for (const keyword of todoKeywords) {
+                const stateKey = `${keyword}|${theater.name}`;
+                const entry = state[stateKey];
+
+                const movie = list.MovieList.find(m => norm(m.MovieNmNat) === norm(keyword))
+                  || list.MovieList.find(m => norm(m.MovieNmNat).includes(norm(keyword)));
+                if (!movie) {
+                  console.log(`"${keyword}" @ ${theater.name}: 상영작 목록에 아직 없음`);
+                  continue;
+                }
+
+                const cur = {};
+                const samples = {};
+                for (const d of dates) {
+                  const res = await getJson(`${BASE}/reserve/showseq_list.do?${qs(theater, movie.MovieCd, d)}`, headers);
+                  if (!res || !Array.isArray(res.Showseqlist)) continue;
+                  // 요청한 영화·영화관·날짜의 회차만 센다.
+                  const items = res.Showseqlist.flatMap(g => g.MovieDetail || [])
+                    .filter(it => it.MovieCd === movie.MovieCd && it.CinemaCd === theater.cinemaCd && it.PlaySDT === d && !isSpecial(it));
+                  cur[d] = items.length;
+                  if (items.length) samples[d] = items.slice(0, 3).map(it => `${it.CinemaNmNat} ${it.StartTime} ${it.MovieNmNat}(${it.MovieCd})`);
+                }
+
+                const { events, next } = evaluate(entry, cur, today);
+                console.log(`"${keyword}" @ ${theater.name}: "${movie.MovieNmNat}"(${movie.MovieCd}) 날짜별 일반 회차 ${JSON.stringify(cur)}`);
+                if (events.length > 0) {
+                  console.log(`  → ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
+                  for (const e of events) console.log(`  근거 ${e.date}: ${JSON.stringify(samples[e.date])}`);
+                  const content = buildMessage(movie.MovieNmNat, '디트릭스', theater.name, events);
+                  if (DRY) {
+                    console.log(`  [시험 모드] 전송 생략. 메시지:\n${content}`);
+                  } else {
+                    const res = await fetchWithRetry(process.env.DISCORD_WEBHOOK, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+                    });
+                    console.log('Discord 응답 상태:', res.status);
+                  }
+                }
+                if (!DRY && (events.length > 0 || (entry && JSON.stringify(next) !== JSON.stringify(entry)))) {
+                  state[stateKey] = next;
+                  stateChanged = true;
+                }
+              }
+            }
+
+            console.log(`이번 실행 총 요청 수: ${requestCount}`);
+            if (stateChanged) fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+          })();
+          SCRIPT_EOF
+          node check_dtryx.js
+
+      - name: Commit updated state
+        run: |
+          if [ -n "$(git status --porcelain dtryx_state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add dtryx_state.json
+            git commit -m "chore: update Dtryx booking state"
+            # 다른 워크플로우가 먼저 push했을 수 있으므로 rebase 후 push, 실패 시 재시도.
+            for i in 1 2 3; do
+              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+              sleep 3
+            done
+            exit 1
+          else
+            echo "상태 변경 없음"
+          fi
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -H 'Content-Type: application/json' \
+            -d "{\"content\":\"⚠️ 디트릭스 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" || true
