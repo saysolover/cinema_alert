@@ -33,12 +33,17 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DRY_RUN: ${{ inputs.dry_run }}
+          # dtryx.com은 해외 IP를 차단 → 서울 리전 Lambda 중계(relay/README.md)를 거친다. 미설정이면 직접 접속.
+          DTRYX_RELAY_URL: ${{ secrets.DTRYX_RELAY_URL }}
+          DTRYX_RELAY_TOKEN: ${{ secrets.DTRYX_RELAY_TOKEN }}
         run: |
           cat > check_dtryx.js << 'SCRIPT_EOF'
           const fs = require('fs');
 
           const STATE_FILE = 'dtryx_state.json';
-          const BASE = 'https://www.dtryx.com';
+          const RELAY_URL = (process.env.DTRYX_RELAY_URL || '').trim().replace(/\/+$/, '');
+          const BASE = RELAY_URL || 'https://www.dtryx.com';
+          const RELAY_HEADERS = RELAY_URL ? { 'X-Relay-Token': (process.env.DTRYX_RELAY_TOKEN || '').trim() } : {};
           const DRY = process.env.DRY_RUN === 'true';
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
@@ -155,12 +160,15 @@ jobs:
 
             // 접속 식별값(cgid)은 만료될 수 있어 매 실행마다 예매 페이지에서 새로 받는다.
             requestCount++;
-            const pageRes = await fetchWithRetry(`${BASE}/reserve/movie.do`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+            console.log(RELAY_URL ? '중계(Lambda)를 거쳐 접속' : '디트릭스에 직접 접속');
+            const pageRes = await fetchWithRetry(`${BASE}/reserve/movie.do`, { headers: { 'User-Agent': 'Mozilla/5.0', ...RELAY_HEADERS } });
+            if (!pageRes.ok) throw new Error(`movie.do HTTP ${pageRes.status}` + (pageRes.status === 403 ? ' (중계 토큰 불일치 가능성)' : ''));
             const html = await pageRes.text();
             const cgid = (html.match(/id="cgid"[^>]*value="([^"]+)"/) || html.match(/name="cgid"[^>]*value="([^"]+)"/) || [])[1];
+            if (!cgid) console.log(`movie.do 응답: HTTP ${pageRes.status}, ${html.length}자, type=${pageRes.headers.get('content-type')}, 앞부분=${JSON.stringify(html.slice(0, 300))}, cgid 언급=${html.includes('cgid')}`);
             if (!cgid) throw new Error('movie.do 페이지에서 cgid를 찾지 못함 (페이지 구조 변경 가능성)');
 
-            const headers = { 'X-Requested-With': 'XMLHttpRequest', 'User-Agent': 'Mozilla/5.0', 'Referer': `${BASE}/reserve/movie.do` };
+            const headers = { 'X-Requested-With': 'XMLHttpRequest', 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.dtryx.com/reserve/movie.do', ...RELAY_HEADERS };
             const qs = (t, movieCd, playSDT) =>
               `cgid=${cgid}&ssid=&tokn=&hold=&BrandCd=${t.brandCd}&CinemaCd=${t.cinemaCd}&MovieCd=${movieCd}&PlaySDT=${playSDT}&Sort=boxoffice&ScreenCd=&ShowSeq=&TabBrandCd=dtryx`;
 
