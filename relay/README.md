@@ -10,6 +10,7 @@
 
 ## 0. 먼저: 비밀번호용 토큰 만들기 (1분)
 1. 윈도우 시작 메뉴에서 **PowerShell**을 열고 아래 한 줄을 붙여넣은 뒤 Enter.
+   (회색 상자 안의 `$b=` 로 시작하는 **한 줄만** 복사하세요. ```` ``` ```` 로 된 줄은 복사하면 오류가 납니다.)
    ```powershell
    $b=New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ([BitConverter]::ToString($b) -replace '-','') | Set-Clipboard
    ```
