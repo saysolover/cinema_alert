@@ -9,3 +9,8 @@ MEGABOX,홍대,10
 MEGABOX,수원AK플라자,30
 MEGABOX,광명AK플라자,30
 MEGABOX,수원스타필드,30
+DTRYX,라이카시네마,spacedog|000072
+DTRYX,씨네큐브광화문,cinecube|000003
+DTRYX,아트나인,etc|000162
+DTRYX,아트하우스모모,indieart|000067
+DTRYX,에무시네마,indieart|000069
