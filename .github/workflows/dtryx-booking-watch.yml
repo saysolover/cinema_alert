@@ -32,6 +32,7 @@ jobs:
       - name: Check Dtryx booking status and notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DRY_RUN: ${{ inputs.dry_run }}
           # dtryx.com은 해외 IP를 차단 → 서울 리전 Lambda 중계(relay/README.md)를 거친다. 미설정이면 직접 접속.
           DTRYX_RELAY_URL: ${{ secrets.DTRYX_RELAY_URL }}
@@ -142,6 +143,10 @@ jobs:
             throw lastErr;
           }
 
+          // 재시도해도 해결되지 않는 설정 문제(중계 토큰 불일치 등). 첫 회에 바로 알리고 워크플로도 실패로 끝낸다.
+          class ConfigError extends Error {}
+          const failures = []; // 이번 실행에서 못 끝낸 조회(일시적 실패). 하나라도 있으면 이번 실행은 "실패"로 센다.
+
           let requestCount = 0;
           // 실패는 null로 돌려 "0회(닫힘)"와 구분한다. 재시도는 fetchWithRetry 안에서 이미 했으므로 여기서는 한 번만 부른다
           // (겹쳐 재시도하면 장애 때 한 요청이 몇 분씩 걸린다).
@@ -151,15 +156,22 @@ jobs:
               requestCount++;
               await sleep(300); // 연속 호출 간격
               const r = await fetchWithRetry(url, { headers });
-              if (r.status >= 500) { console.log(`  (조회 실패 HTTP ${r.status}, 이번엔 스킵)`); return null; }
+              if ([401, 403].includes(r.status)) throw new ConfigError(`HTTP ${r.status} (중계 토큰 불일치 가능성)`);
+              if (r.status >= 500) {
+                console.log(`  (조회 실패 HTTP ${r.status}, 이번엔 스킵)`);
+                failures.push(`조회 HTTP ${r.status}`);
+                return null;
+              }
               return await r.json();
             } catch (e) {
+              if (e instanceof ConfigError) throw e;
               console.log(`  (조회 실패, 이번엔 스킵: ${e.message})`);
+              failures.push(`조회 실패: ${e.message}`);
               return null;
             }
           }
 
-          (async () => {
+          async function main() {
             const keywords = loadLines('keywords.txt');
             const theaters = loadTheaters();
             if (keywords.length === 0 || theaters.length === 0) {
@@ -181,7 +193,8 @@ jobs:
             requestCount++;
             console.log(RELAY_URL ? '중계(Lambda)를 거쳐 접속' : '디트릭스에 직접 접속');
             const pageRes = await fetchWithRetry(`${BASE}/reserve/movie.do`, { headers: { 'User-Agent': 'Mozilla/5.0', ...RELAY_HEADERS } });
-            if (!pageRes.ok) throw new Error(`movie.do HTTP ${pageRes.status}` + (pageRes.status === 403 ? ' (중계 토큰 불일치 가능성)' : ''));
+            if ([401, 403].includes(pageRes.status)) throw new ConfigError(`movie.do HTTP ${pageRes.status} (중계 토큰 불일치 가능성)`);
+            if (!pageRes.ok) throw new Error(`movie.do HTTP ${pageRes.status}`);
             const html = await pageRes.text();
             const cgid = (html.match(/id="cgid"[^>]*value="([^"]+)"/) || html.match(/name="cgid"[^>]*value="([^"]+)"/) || [])[1];
             if (!cgid) console.log(`movie.do 응답: HTTP ${pageRes.status}, ${html.length}자, type=${pageRes.headers.get('content-type')}, 앞부분=${JSON.stringify(html.slice(0, 300))}, cgid 언급=${html.includes('cgid')}`);
@@ -252,7 +265,72 @@ jobs:
 
             console.log(`이번 실행 총 요청 수: ${requestCount}`);
             if (stateChanged) fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-          })();
+          }
+
+          // ---- 실행 결과(연속 실패) 관리 ----
+          // 일시적 실패는 로그에만 남기고 워크플로는 성공(exit 0)으로 끝낸다. 연속 6회(30분)째와 24회(2시간)째에만 알리고,
+          // 회복하면 한 번 알린다. 설정 문제(ConfigError)는 첫 회에 알리고 워크플로도 실패로 끝낸다.
+          // 연속 실패 상태는 dtryx_state.json의 "_health" 키에 저장한다(기존 상태 커밋 방식 그대로).
+          const ALERT_AT = [6, 24];
+          const kst = ms => new Date(ms + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
+
+          // prev: 저장된 _health. kind: null(성공) | 'transient' | 'config'. 반환: { health, messages }
+          function nextHealth(prev, kind, errText, nowMs) {
+            const p = prev || { consecutive_failures: 0 };
+            const messages = [];
+            if (!kind) {
+              if (p.consecutive_failures > 0 && p.alerted) {
+                const minutes = Math.round((nowMs - Date.parse(p.first_failure_at)) / 60000);
+                messages.push(`✅ 디트릭스 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
+              }
+              return { health: { consecutive_failures: 0 }, messages };
+            }
+            const n = p.consecutive_failures + 1;
+            const first = p.first_failure_at || new Date(nowMs).toISOString();
+            const since = `첫 실패: ${kst(Date.parse(first))}`;
+            const last = `마지막 오류: ${errText.slice(0, 200)}`;
+            let alerted = !!p.alerted;
+            if (kind === 'config') {
+              if (p.last_kind !== 'config') {
+                messages.push(`🚫 디트릭스 감시 설정 오류 — 바로 확인이 필요합니다\n${last}\n${process.env.RUN_URL || ''}`.trim());
+                alerted = true;
+              }
+            } else if (ALERT_AT.includes(n)) {
+              messages.push(`⚠️ 디트릭스 감시 연속 실패 ${n}회 (약 ${n * 5}분)\n${since}\n${last}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+              alerted = true;
+            }
+            return { health: { consecutive_failures: n, first_failure_at: first, last_kind: kind, last_error: errText.slice(0, 200), alerted }, messages };
+          }
+
+          async function run() {
+            let fatal = null;
+            try { await main(); } catch (e) { fatal = e; }
+            const kind = fatal instanceof ConfigError ? 'config' : (fatal || failures.length ? 'transient' : null);
+            const errText = fatal ? fatal.message : (failures[failures.length - 1] || '');
+            if (kind) console.log(`이번 실행은 실패로 집계: ${kind} — ${errText}` + (failures.length > 1 ? ` (조회 실패 ${failures.length}건)` : ''));
+
+            const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
+            const { health, messages } = nextHealth(state._health, kind, errText, Date.now());
+            for (const content of messages) {
+              if (DRY) { console.log(`[시험 모드] 전송 생략. 메시지:\n${content}`); continue; }
+              const res = await fetchWithRetry(process.env.DISCORD_WEBHOOK, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+              });
+              console.log('Discord 응답 상태:', res.status);
+            }
+            // 한 번도 실패한 적 없으면 파일에 _health를 만들지 않는다(불필요한 커밋 방지).
+            if (!DRY && (state._health || kind)) {
+              state._health = health;
+              fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+            }
+            if (kind === 'config') {
+              // 상태 커밋 뒤에 워크플로를 실패로 끝내기 위한 표시. 알림은 위에서 이미 (첫 회에만) 보냈다.
+              fs.writeFileSync('dtryx_config_error.txt', errText);
+              console.log('설정 오류 — 워크플로를 실패로 끝냅니다.');
+            }
+          }
+
+          run();
           SCRIPT_EOF
           node check_dtryx.js
 
@@ -273,8 +351,14 @@ jobs:
             echo "상태 변경 없음"
           fi
 
+      - name: Fail the run on a configuration problem
+        if: hashFiles('dtryx_config_error.txt') != ''
+        run: |
+          echo "::error::디트릭스 설정 오류: $(cat dtryx_config_error.txt)"
+          exit 1
+
       - name: Notify Discord on failure
-        if: failure()
+        if: failure() && hashFiles('dtryx_config_error.txt') == ''  # 설정 오류는 스크립트가 이미 알렸다
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
