@@ -14,7 +14,7 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
+    "consecutive_failures": 2,
     "first_failure_at": "2026-10-08T03:22:47.907Z",
     "last_kind": "transient",
     "last_error": "조회 HTTP 502",
