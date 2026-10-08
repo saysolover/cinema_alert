@@ -15,10 +15,6 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-08T02:34:39.469Z",
-    "last_kind": "transient",
-    "last_error": "실행 시간 상한(4분) 초과 — 디트릭스 응답 지연으로 중단",
-    "alerted": false
+    "consecutive_failures": 0
   }
 }
