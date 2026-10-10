@@ -13,10 +13,6 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-10T17:10:47.298Z",
-    "last_kind": "transient",
-    "last_error": "fetch failed",
-    "alerted": false
+    "consecutive_failures": 0
   }
 }
