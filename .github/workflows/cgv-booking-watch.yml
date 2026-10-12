@@ -15,6 +15,7 @@ concurrency:
 jobs:
   check-and-notify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +31,7 @@ jobs:
           key: playwright-chromium-ubuntu-24.04
 
       - name: Install Playwright
+        timeout-minutes: 5  # apt가 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함(예전엔 6시간 멈춤)
         run: |
           npm init -y
           npm install playwright

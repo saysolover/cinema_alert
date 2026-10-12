@@ -15,6 +15,7 @@ concurrency:
 jobs:
   check-and-notify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -26,16 +27,24 @@ jobs:
       - name: Check whether movie-code resolution is needed
         id: precheck
         run: |
-          if [ ! -f megabox_movie_cache.json ]; then echo '{}' > megabox_movie_cache.json; fi
-          NEED=false
-          if [ -f keywords.txt ]; then
-            while IFS= read -r kw; do
-              [ -z "$kw" ] && continue
-              code=$(jq -r --arg k "$kw" '.[$k] // empty' megabox_movie_cache.json)
-              if [ -z "$code" ]; then NEED=true; fi
-            done < keywords.txt
-          fi
-          echo "need_resolution=$NEED" >> "$GITHUB_OUTPUT"
+          cat > resolve_due.js << 'SCRIPT_EOF'
+          // 영화 코드를 아직 못 찾은 키워드 중 "지금 다시 시도할 차례"인 것만 resolve_due.json에 적는다.
+          // 처음 보는 키워드는 바로, 이미 시도한 키워드는 마지막 시도 14분 뒤부터(15분 간격, 3분 주기의 지터를 감안).
+          // 그 사이 실행에서는 Chromium 설치와 이름 찾기를 건너뛰고 이미 찾은 코드로만 감시한다.
+          const fs = require('fs');
+          const RETRY_MS = 14 * 60 * 1000;
+          const readJson = (f, d) => fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : d;
+          const keywords = fs.existsSync('keywords.txt') ? fs.readFileSync('keywords.txt', 'utf8').split('\n').map(s => s.trim()).filter(Boolean) : [];
+          const cache = readJson('megabox_movie_cache.json', {});
+          const attempts = readJson('megabox_state.json', {})._resolve || {};
+          const now = Date.now();
+          const missing = keywords.filter(k => !cache[k]);
+          const due = missing.filter(k => !(attempts[k] && now - Date.parse(attempts[k]) < RETRY_MS));
+          fs.writeFileSync('resolve_due.json', JSON.stringify(due));
+          console.log(`미해결 ${missing.length}개, 이번에 시도할 것 ${due.length}개:`, JSON.stringify(due));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `need_resolution=${due.length > 0}\n`);
+          SCRIPT_EOF
+          node resolve_due.js
 
       - name: Cache Playwright browsers
         if: steps.precheck.outputs.need_resolution == 'true'
@@ -45,6 +54,7 @@ jobs:
           key: playwright-chromium-ubuntu-24.04
 
       - name: Install Playwright
+        timeout-minutes: 5  # apt가 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함(예전엔 6시간 멈춤)
         if: steps.precheck.outputs.need_resolution == 'true'
         run: |
           npm init -y
@@ -59,15 +69,18 @@ jobs:
           const fs = require('fs');
 
           const cache = fs.existsSync('megabox_movie_cache.json') ? JSON.parse(fs.readFileSync('megabox_movie_cache.json', 'utf8')) : {};
-          const keywords = fs.readFileSync('keywords.txt', 'utf8').split('\n').map(s => s.trim()).filter(Boolean);
-          const missing = keywords.filter(k => !cache[k]);
+          const hadStateFile = fs.existsSync('megabox_state.json');
+          const state = hadStateFile ? JSON.parse(fs.readFileSync('megabox_state.json', 'utf8')) : {};
+          const attempts = state._resolve || {}; // 키워드별 마지막 시도 시각 — 15분에 한 번만 다시 시도하려는 기록
+          // 앞 단계(resolve_due.js)가 "지금 시도할 차례"인 키워드만 골라 둔다.
+          const due = JSON.parse(fs.readFileSync('resolve_due.json', 'utf8'));
 
           (async () => {
-            console.log('캐시 필요 키워드:', JSON.stringify(missing));
-            if (missing.length === 0) { console.log('캐시 필요 없음 — 종료'); return; }
+            console.log('이번에 시도할 키워드:', JSON.stringify(due));
+            if (due.length === 0) { console.log('시도할 키워드 없음 — 종료'); return; }
             const browser = await chromium.launch();
 
-            for (const keyword of missing) {
+            for (const keyword of due) {
               const page = await browser.newPage();
               let movieNo = null;
               try {
@@ -89,15 +102,20 @@ jobs:
               await page.close();
               if (movieNo) {
                 cache[keyword] = movieNo;
+                delete attempts[keyword];
                 console.log(`"${keyword}": movieNo=${movieNo} 확인, 캐시 저장`);
               } else {
-                console.log(`"${keyword}": movieNo 확인 실패 (아직 메가박스 목록에 없을 수 있음) — 다음 실행에 재시도`);
+                attempts[keyword] = new Date().toISOString();
+                console.log(`"${keyword}": movieNo 확인 실패 (아직 메가박스 목록에 없을 수 있음) — 약 15분 뒤 재시도`);
               }
             }
 
             await browser.close();
             fs.writeFileSync('megabox_movie_cache.json', JSON.stringify(cache, null, 2));
             console.log('캐시 파일 저장 완료:', JSON.stringify(cache));
+            // 시도 기록은 상태 파일의 _resolve에 둔다(이미 상태 커밋 대상). 기록이 없고 파일도 없었다면 새로 만들지 않는다.
+            if (Object.keys(attempts).length) state._resolve = attempts; else delete state._resolve;
+            if (hadStateFile || state._resolve) fs.writeFileSync('megabox_state.json', JSON.stringify(state, null, 2));
           })();
           SCRIPT_EOF
           node resolve_megabox.js
