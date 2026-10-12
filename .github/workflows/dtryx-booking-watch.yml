@@ -49,6 +49,8 @@ jobs:
           const STATE_FILE = 'dtryx_state.json';
           const RELAY_URL = (process.env.DTRYX_RELAY_URL || '').trim().replace(/\/+$/, '');
           const BASE = RELAY_URL || 'https://www.dtryx.com';
+          // 사용자에게 보여 주는 링크는 항상 공개 주소 기준이다(BASE를 쓰면 중계 주소가 알림에 샌다).
+          const PUBLIC_URL = 'https://www.dtryx.com';
           const RELAY_HEADERS = RELAY_URL ? { 'X-Relay-Token': (process.env.DTRYX_RELAY_TOKEN || '').trim() } : {};
           const DRY = process.env.DRY_RUN === 'true';
 
@@ -109,7 +111,12 @@ jobs:
             return { events, next };
           }
 
-          function buildMessage(movie, label, theater, events) {
+          // 극장·영화·날짜가 선택된 예매 화면으로 바로 열린다.
+          const bookingUrl = (theater, movieCd, date) =>
+            `${PUBLIC_URL}/reserve/movie.do?BrandCd=${encodeURIComponent(theater.brandCd)}&CinemaCd=${encodeURIComponent(theater.cinemaCd)}&MovieCd=${encodeURIComponent(movieCd)}&PlaySDT=${encodeURIComponent(date)}`;
+
+          // links: [{ date, url }]. [예매하기](<url>) 형태로 글자에 링크를 걸고, <>로 미리보기 카드가 붙지 않게 한다.
+          function buildMessage(movie, label, theater, events, links = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
             const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
@@ -118,6 +125,11 @@ jobs:
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
+            for (const l of links) {
+              const line = `\n${l.date} [예매하기](<${l.url}>)`;
+              if (msg.length + line.length > 1900) break; // 디스코드 메시지 상한(2000자)을 넘기면 알림 전체가 거부된다
+              msg += line;
+            }
             return msg;
           }
 
@@ -251,7 +263,8 @@ jobs:
                 if (events.length > 0) {
                   console.log(`  → ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   for (const e of events) console.log(`  근거 ${e.date}: ${JSON.stringify(samples[e.date])}`);
-                  const content = buildMessage(movie.MovieNmNat, '디트릭스', theater.name, events);
+                  const content = buildMessage(movie.MovieNmNat, '디트릭스', theater.name, events,
+                    events.map(e => ({ date: e.date, url: bookingUrl(theater, movie.MovieCd, e.date) })));
                   if (DRY) {
                     console.log(`  [시험 모드] 전송 생략. 메시지:\n${content}`);
                   } else {
