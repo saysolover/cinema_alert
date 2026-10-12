@@ -14,3 +14,4 @@ DTRYX,씨네큐브광화문,cinecube|000003
 DTRYX,아트나인,etc|000162
 DTRYX,아트하우스모모,indieart|000067
 DTRYX,에무시네마,indieart|000069
+CINEQ,신도림,1001

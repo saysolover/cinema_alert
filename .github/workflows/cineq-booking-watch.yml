@@ -1,0 +1,371 @@
+name: 씨네Q 예매 오픈 감시
+
+on:
+  schedule:
+    - cron: '4-59/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '시험 모드: Discord 알림과 상태 저장 없이 판정 결과만 로그에 출력'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cineq-booking-watch
+  cancel-in-progress: false
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # 대기하다 시작한 실행은 트리거 시점의 옛 커밋을 받는다(앞 실행이 방금 올린 상태 커밋이 빠져 push 때 충돌).
+      # 그래서 job이 시작되는 시점의 브랜치 최신 끝을 받는다.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 브라우저 없이 요청만 사용한다(설치 단계 없음).
+      - name: Check CineQ booking status and notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          cat > check_cineq.js << 'SCRIPT_EOF'
+          const fs = require('fs');
+
+          const STATE_FILE = 'cineq_state.json';
+          const BASE = 'https://www.cineq.co.kr';
+          const DRY = process.env.DRY_RUN === 'true';
+
+          const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
+          const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
+          const DAYS_AHEAD = 10;  // 오늘부터 조회할 날짜 수(씨네Q는 약 9일 앞까지 예매를 연다)
+          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
+          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
+
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const norm = s => (s || '').replace(/[\s()]/g, '').toLowerCase();
+          const KST_OFFSET = 9 * 60 * 60 * 1000;
+          const kstDate = offsetDays => new Date(Date.now() + KST_OFFSET + offsetDays * 86400000).toISOString().slice(0, 10);
+          const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+
+          function loadLines(file) {
+            if (!fs.existsSync(file)) return [];
+            return fs.readFileSync(file, 'utf8').split('\n').map(s => s.trim()).filter(Boolean);
+          }
+
+          // theaters.txt: CINEQ,이름,극장코드   예) CINEQ,신도림,1001
+          function loadTheaters() {
+            const out = [];
+            for (const line of loadLines('theaters.txt')) {
+              const [chain, name, code] = line.split(',').map(s => s.trim());
+              if (chain === 'CINEQ' && name && code) out.push({ name, code });
+            }
+            return out;
+          }
+
+          // state[key]: 없음(미알림) | { since, dates: { 'YYYY-MM-DD': 일반 회차 수 } }
+          // 첫 알림 이후(추적 단계)에는 15분에 한 번만 조회하고, FOLLOW_DAYS가 지나면 추적을 끝낸다.
+          function shouldCheck(entry, today, followUpRun) {
+            if (!entry) return true;
+            if (daysBetween(entry.since, today) > FOLLOW_DAYS) return false;
+            return followUpRun;
+          }
+
+          // cur에는 "조회에 성공한 날짜"만 들어 있다(실패한 날짜는 없음). 0회는 그 날짜가 닫혀 있다는 뜻.
+          function evaluate(entry, cur, today) {
+            const next = entry ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
+            const events = [];
+            for (const [d, c] of Object.entries(cur)) {
+              const p = next.dates[d];
+              if (c <= 0) { delete next.dates[d]; continue; }
+              if (p === undefined) {
+                events.push({ date: d, count: c, kind: 'new' });
+                next.dates[d] = c;
+              } else if (c >= p + GROWTH) {
+                events.push({ date: d, count: c, kind: 'more', added: c - p });
+                next.dates[d] = c;
+              } else if (c < p / 2) {
+                next.dates[d] = c;
+              }
+            }
+            for (const d of Object.keys(next.dates)) if (d < today) delete next.dates[d];
+            return { events, next };
+          }
+
+          // 씨네Q는 예매 버튼이 팝업(POST)을 여는 방식이라 영화·날짜를 지정한 링크가 없다. 극장 시간표 페이지로 연결한다.
+          const theaterUrl = theater => `${BASE}/Theater/Movie?TheaterCode=${encodeURIComponent(theater.code)}`;
+
+          function buildMessage(movie, label, theater, events, link) {
+            const news = events.filter(e => e.kind === 'new');
+            const more = events.filter(e => e.kind === 'more');
+            const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
+            const dates = news.length
+              ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
+              : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
+            let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
+            if (link) msg += `\n[예매하기](<${link}>)`; // <>로 미리보기 카드가 붙지 않게 한다
+            return msg.slice(0, 1900); // 디스코드 메시지 상한(2000자)을 넘기면 알림 전체가 거부된다
+          }
+
+          // 502/503/504는 일시 장애로 보고 재시도한다. 읽기 전용 조회(idempotent)만 재시도한다 —
+          // Discord 같은 POST를 다시 보내 알림이 중복되는 것을 막기 위해.
+          const RETRY_STATUS = new Set([502, 503, 504]);
+          // cron 간격(5분) 안에 끝내기 위한 실행 시간 상한. 넘으면 재시도를 멈추고, 다음 조회부터는 실행을 실패로 끝낸다.
+          const DEADLINE = Date.now() + 4 * 60 * 1000;
+
+          async function fetchWithRetry(url, options, attempts = 3, idempotent = !options || !options.method || options.method === 'GET') {
+            let lastErr;
+            for (let i = 0; i < attempts; i++) {
+              const last = i === attempts - 1 || Date.now() > DEADLINE;
+              try {
+                const r = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
+                if (r.status >= 500) {
+                  const head = (await r.clone().text().catch(() => '')).slice(0, 100).replace(/\s+/g, ' ');
+                  console.log(`  (HTTP ${r.status}: ${head})`);
+                }
+                if (last || !(idempotent && RETRY_STATUS.has(r.status))) return r;
+              } catch (e) {
+                lastErr = e;
+                if (last) throw e;
+              }
+              await sleep(3000 * (i + 1)); // 3초, 6초
+            }
+            throw lastErr;
+          }
+
+          // 재시도해도 해결되지 않는 문제(접속 차단 등). 첫 회에 바로 알리고 워크플로도 실패로 끝낸다.
+          class ConfigError extends Error {}
+          const failures = []; // 이번 실행에서 못 끝낸 조회(일시적 실패). 하나라도 있으면 이번 실행은 "실패"로 센다.
+
+          let requestCount = 0;
+          // 날짜의 시간표 HTML 조각을 받는다. 실패는 null로 돌려 "상영 없음(0회)"과 구분한다.
+          // PlayDate는 YYYYMMDD여야 한다(YYYY-MM-DD를 보내면 오류 없이 빈 응답이 와서 "상영 없음"으로 오해하게 된다).
+          async function getTimetable(theater, ymd) {
+            if (Date.now() > DEADLINE) throw new Error('실행 시간 상한(4분) 초과 — 씨네Q 응답 지연으로 중단');
+            try {
+              requestCount++;
+              await sleep(300); // 연속 호출 간격
+              const r = await fetchWithRetry(`${BASE}/Theater/MovieTable2`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest', 'User-Agent': 'Mozilla/5.0', 'Referer': theaterUrl(theater) },
+                body: `TheaterCode=${encodeURIComponent(theater.code)}&PlayDate=${ymd}`
+              }, 3, true);
+              if ([401, 403].includes(r.status)) throw new ConfigError(`HTTP ${r.status} (씨네Q 접속 차단 가능성)`);
+              if (!r.ok) {
+                console.log(`  (조회 실패 HTTP ${r.status}, 이번엔 스킵)`);
+                failures.push(`조회 HTTP ${r.status}`);
+                return null;
+              }
+              const html = await r.text();
+              // 정상 응답에는 항상 "관람료 안내" 버튼이 있다. 없으면 오류 페이지 등이므로 0회로 세지 않는다.
+              if (!html.includes('priceTableBtn')) {
+                console.log(`  (응답 형식이 달라 스킵: ${html.length}자, 앞부분=${JSON.stringify(html.slice(0, 120))})`);
+                failures.push('응답 형식이 달라짐');
+                return null;
+              }
+              return html;
+            } catch (e) {
+              if (e instanceof ConfigError) throw e;
+              console.log(`  (조회 실패, 이번엔 스킵: ${e.message})`);
+              failures.push(`조회 실패: ${e.message}`);
+              return null;
+            }
+          }
+
+          // HTML 조각 → [{ title, times }]. 제목 앞의 관람등급 span은 빼고 글자만 쓴다. times는 그 영화의 회차 수.
+          function parseMovies(html, ymd) {
+            const movies = [];
+            for (const block of html.split('<div class="each-movie-time">').slice(1)) {
+              const t = block.match(/<div class="title">([\s\S]*?)<\/div>/);
+              if (!t) continue;
+              const title = t[1].replace(/<span[^>]*>[\s\S]*?<\/span>/g, '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim();
+              const times = (block.match(new RegExp(`class="time"[^>]*data-playdate="${ymd}"`, 'g')) || []).length;
+              movies.push({ title, times });
+            }
+            return movies;
+          }
+
+          async function main() {
+            const keywords = loadLines('keywords.txt');
+            const theaters = loadTheaters();
+            if (keywords.length === 0 || theaters.length === 0) {
+              console.log('keywords.txt 또는 theaters.txt(CINEQ)에 감시 대상이 없음. 종료.');
+              return;
+            }
+
+            const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
+            const today = kstDate(0);
+            const followUpRun = new Date().getUTCMinutes() % 15 < 3;
+            const pendingKeys = k => theaters.filter(t => shouldCheck(state[`${k}|${t.name}`], today, followUpRun));
+            if (!keywords.some(k => pendingKeys(k).length)) {
+              console.log('이번 실행에서 조회할 대상 없음 (추적 대기 또는 추적 종료).');
+              return;
+            }
+            if (DRY) console.log('[시험 모드] 알림 전송과 상태 저장을 하지 않습니다.');
+
+            let stateChanged = false;
+
+            for (const theater of theaters) {
+              const todoKeywords = keywords.filter(k => shouldCheck(state[`${k}|${theater.name}`], today, followUpRun));
+              if (todoKeywords.length === 0) continue;
+
+              // 날짜별 시간표는 모든 키워드가 함께 쓰므로 한 번만 받는다.
+              const byDate = {}; // 'YYYY-MM-DD' -> [{ title, times }]  (조회 실패한 날짜는 없음)
+              for (let i = 0; i < DAYS_AHEAD; i++) {
+                const d = kstDate(i);
+                const ymd = d.replace(/-/g, '');
+                const html = await getTimetable(theater, ymd);
+                if (html) byDate[d] = parseMovies(html, ymd);
+              }
+              const okDays = Object.keys(byDate);
+              console.log(`${theater.name}: 조회된 날짜 ${okDays.length}/${DAYS_AHEAD}, 상영작 ${new Set(okDays.flatMap(d => byDate[d].map(m => m.title))).size}편`);
+              if (okDays.length === 0) continue;
+
+              for (const keyword of todoKeywords) {
+                const stateKey = `${keyword}|${theater.name}`;
+                const entry = state[stateKey];
+
+                const cur = {};
+                let movieTitle = null;
+                for (const d of okDays) {
+                  const hits = byDate[d].filter(m => norm(m.title).includes(norm(keyword)) && !SPECIAL_RE.test(m.title));
+                  cur[d] = hits.reduce((n, m) => n + m.times, 0);
+                  if (hits.length && !movieTitle) movieTitle = hits[0].title;
+                }
+                console.log(`"${keyword}" @ ${theater.name}: ${movieTitle ? `"${movieTitle}" ` : '상영작 목록에 아직 없음 '}날짜별 일반 회차 ${JSON.stringify(cur)}`);
+
+                const { events, next } = evaluate(entry, cur, today);
+                if (events.length > 0) {
+                  console.log(`  → ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
+                  const content = buildMessage(movieTitle || keyword, '씨네Q', theater.name, events, theaterUrl(theater));
+                  if (DRY) {
+                    console.log(`  [시험 모드] 전송 생략. 메시지:\n${content}`);
+                  } else {
+                    const res = await fetchWithRetry(process.env.DISCORD_WEBHOOK, {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+                    });
+                    console.log('Discord 응답 상태:', res.status);
+                  }
+                }
+                if (!DRY && (events.length > 0 || (entry && JSON.stringify(next) !== JSON.stringify(entry)))) {
+                  state[stateKey] = next;
+                  stateChanged = true;
+                }
+              }
+            }
+
+            console.log(`이번 실행 총 요청 수: ${requestCount}`);
+            if (stateChanged) fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+          }
+
+          // ---- 실행 결과(연속 실패) 관리 ----
+          // 일시적 실패는 로그에만 남기고 워크플로는 성공(exit 0)으로 끝낸다. 연속 6회(30분)째와 24회(2시간)째에만 알리고,
+          // 회복하면 한 번 알린다. 접속 차단(ConfigError)은 첫 회에 알리고 워크플로도 실패로 끝낸다.
+          // 연속 실패 상태는 cineq_state.json의 "_health" 키에 저장한다(기존 상태 커밋 방식 그대로).
+          const ALERT_AT = [6, 24];
+          const kst = ms => new Date(ms + KST_OFFSET).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
+
+          // prev: 저장된 _health. kind: null(성공) | 'transient' | 'config'. 반환: { health, messages }
+          function nextHealth(prev, kind, errText, nowMs) {
+            const p = prev || { consecutive_failures: 0 };
+            const messages = [];
+            if (!kind) {
+              if (p.consecutive_failures > 0 && p.alerted) {
+                const minutes = Math.round((nowMs - Date.parse(p.first_failure_at)) / 60000);
+                messages.push(`✅ 씨네Q 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
+              }
+              return { health: { consecutive_failures: 0 }, messages };
+            }
+            const n = p.consecutive_failures + 1;
+            const first = p.first_failure_at || new Date(nowMs).toISOString();
+            const since = `첫 실패: ${kst(Date.parse(first))}`;
+            const last = `마지막 오류: ${errText.slice(0, 200)}`;
+            let alerted = !!p.alerted;
+            if (kind === 'config') {
+              if (p.last_kind !== 'config') {
+                messages.push(`🚫 씨네Q 감시 접속 오류 — 바로 확인이 필요합니다\n${last}\n${process.env.RUN_URL || ''}`.trim());
+                alerted = true;
+              }
+            } else if (ALERT_AT.includes(n)) {
+              messages.push(`⚠️ 씨네Q 감시 연속 실패 ${n}회 (약 ${n * 5}분)\n${since}\n${last}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+              alerted = true;
+            }
+            return { health: { consecutive_failures: n, first_failure_at: first, last_kind: kind, last_error: errText.slice(0, 200), alerted }, messages };
+          }
+
+          async function run() {
+            let fatal = null;
+            try { await main(); } catch (e) { fatal = e; }
+            const kind = fatal instanceof ConfigError ? 'config' : (fatal || failures.length ? 'transient' : null);
+            const errText = fatal ? fatal.message : (failures[failures.length - 1] || '');
+            if (kind) console.log(`이번 실행은 실패로 집계: ${kind} — ${errText}` + (failures.length > 1 ? ` (조회 실패 ${failures.length}건)` : ''));
+
+            const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
+            const { health, messages } = nextHealth(state._health, kind, errText, Date.now());
+            for (const content of messages) {
+              if (DRY) { console.log(`[시험 모드] 전송 생략. 메시지:\n${content}`); continue; }
+              const res = await fetchWithRetry(process.env.DISCORD_WEBHOOK, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+              });
+              console.log('Discord 응답 상태:', res.status);
+            }
+            // 한 번도 실패한 적 없으면 파일에 _health를 만들지 않는다(불필요한 커밋 방지).
+            if (!DRY && (state._health || kind)) {
+              state._health = health;
+              fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+            }
+            if (kind === 'config') {
+              // 상태 커밋 뒤에 워크플로를 실패로 끝내기 위한 표시. 알림은 위에서 이미 (첫 회에만) 보냈다.
+              fs.writeFileSync('cineq_config_error.txt', errText);
+              console.log('접속 오류 — 워크플로를 실패로 끝냅니다.');
+            }
+          }
+
+          run();
+          SCRIPT_EOF
+          node check_cineq.js
+
+      - name: Commit updated state
+        run: |
+          if [ -n "$(git status --porcelain cineq_state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add cineq_state.json
+            git commit -m "chore: update CineQ booking state"
+            # 다른 워크플로우가 먼저 push했을 수 있으므로 rebase 후 push, 실패 시 재시도.
+            for i in 1 2 3; do
+              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+              sleep 3
+            done
+            exit 1
+          else
+            echo "상태 변경 없음"
+          fi
+
+      - name: Fail the run on a connection problem
+        if: hashFiles('cineq_config_error.txt') != ''
+        run: |
+          echo "::error::씨네Q 접속 오류: $(cat cineq_config_error.txt)"
+          exit 1
+
+      - name: Notify Discord on failure
+        if: failure() && hashFiles('cineq_config_error.txt') == ''  # 접속 오류는 스크립트가 이미 알렸다
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -H 'Content-Type: application/json' \
+            -d "{\"content\":\"⚠️ 씨네Q 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" || true
