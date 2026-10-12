@@ -13,11 +13,7 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-12T01:26:49.449Z",
-    "last_kind": "transient",
-    "last_error": "조회 HTTP 502",
-    "alerted": false
+    "consecutive_failures": 0
   },
   "트레인스포팅|아트하우스모모": {
     "since": "2026-10-11",
