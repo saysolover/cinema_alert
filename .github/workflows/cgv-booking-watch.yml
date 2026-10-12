@@ -28,25 +28,19 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-ubuntu-24.04
-
       - name: Install Playwright
-        timeout-minutes: 5  # apt가 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함(예전엔 6시간 멈춤)
+        timeout-minutes: 5  # npm이 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함
         run: |
           npm init -y
-          npm install playwright
-          npx playwright install --with-deps chromium
+          npm install playwright-core
+          google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
 
       - name: Check CGV booking status and notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           cat > check_cgv.js << 'SCRIPT_EOF'
-          const { chromium } = require('playwright');
+          const { chromium } = require('playwright-core');
           const fs = require('fs');
 
           const KEYWORDS_FILE = 'keywords.txt';
@@ -136,7 +130,7 @@ jobs:
               return;
             }
 
-            const browser = await chromium.launch();
+            const browser = await chromium.launch({ channel: 'chrome' });
             const page = await browser.newPage({
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             });

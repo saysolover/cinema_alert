@@ -31,15 +31,15 @@ jobs:
       - name: Install Playwright
         run: |
           npm init -y
-          npm install playwright
-          npx playwright install --with-deps chromium
+          npm install playwright-core
+          google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
 
       - name: Check gallery and notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           cat > check.js << 'SCRIPT_EOF'
-          const { chromium } = require('playwright');
+          const { chromium } = require('playwright-core');
           const fs = require('fs');
 
           const SEARCH_URL = 'https://gall.dcinside.com/mgallery/board/lists?id=oticket&s_type=search_subject_memo&s_keyword=%EA%B0%9C%EB%B4%89%20%EC%98%88%EC%A0%95%20%EC%98%81%ED%99%94%20%EB%A6%AC%EC%8A%A4%ED%8A%B8';
@@ -54,7 +54,7 @@ jobs:
           }
 
           (async () => {
-            const browser = await chromium.launch();
+            const browser = await chromium.launch({ channel: 'chrome' });
             const page = await browser.newPage({
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             });

@@ -50,26 +50,19 @@ jobs:
           SCRIPT_EOF
           node resolve_due.js
 
-      - name: Cache Playwright browsers
-        if: steps.precheck.outputs.need_resolution == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-ubuntu-24.04
-
       - name: Install Playwright
-        timeout-minutes: 5  # apt가 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함(예전엔 6시간 멈춤)
+        timeout-minutes: 5  # npm이 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함
         if: steps.precheck.outputs.need_resolution == 'true'
         run: |
           npm init -y
-          npm install playwright
-          npx playwright install --with-deps chromium
+          npm install playwright-core
+          google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
 
       - name: Resolve missing movie codes
         if: steps.precheck.outputs.need_resolution == 'true'
         run: |
           cat > resolve_lotte.js << 'SCRIPT_EOF'
-          const { chromium } = require('playwright');
+          const { chromium } = require('playwright-core');
           const fs = require('fs');
 
           const cache = fs.existsSync('lotte_movie_cache.json') ? JSON.parse(fs.readFileSync('lotte_movie_cache.json', 'utf8')) : {};
@@ -82,7 +75,7 @@ jobs:
           (async () => {
             console.log('이번에 시도할 키워드:', JSON.stringify(due));
             if (due.length === 0) { console.log('시도할 키워드 없음 — 종료'); return; }
-            const browser = await chromium.launch();
+            const browser = await chromium.launch({ channel: 'chrome' });
 
             for (const keyword of due) {
               const page = await browser.newPage();
