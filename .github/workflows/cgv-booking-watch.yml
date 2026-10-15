@@ -19,21 +19,37 @@ jobs:
     steps:
       # 대기하다 시작한 실행은 트리거 시점의 옛 커밋을 받는다(앞 실행이 방금 올린 상태 커밋이 빠져 push 때 충돌).
       # 그래서 job이 시작되는 시점의 브랜치 최신 끝을 받는다.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
+      # 설치 단계의 네트워크 실패(ECONNRESET 등)가 스크립트의 연속 실패 규칙 밖에서 실행을 실패시키므로,
+      # node_modules를 캐시해 적중하면 npm을 건너뛰고, 미스면 재시도한다. 버전은 고정한다(캐시 키와 같이 올릴 것).
+      - name: Cache node_modules
+        id: npm-cache
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: node-modules-playwright-core-1.64.1
+
       - name: Install Playwright
+        if: steps.npm-cache.outputs.cache-hit != 'true'
         timeout-minutes: 5  # npm이 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함
         run: |
           npm init -y
-          npm install playwright-core
-          google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
+          for i in 1 2 3; do
+            npm install playwright-core@1.64.1 --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=60000 && break
+            [ "$i" = 3 ] && exit 1
+            sleep 10
+          done
+
+      - name: Check Chrome
+        run: google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
 
       - name: Check CGV booking status and notify Discord
         env:
@@ -217,7 +233,7 @@ jobs:
 
       - name: Upload failure evidence
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cgv-failure-evidence
           path: |
