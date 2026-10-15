@@ -24,12 +24,12 @@ jobs:
     steps:
       # 대기하다 시작한 실행은 트리거 시점의 옛 커밋을 받는다(앞 실행이 방금 올린 상태 커밋이 빠져 push 때 충돌).
       # 그래서 job이 시작되는 시점의 브랜치 최신 끝을 받는다.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
