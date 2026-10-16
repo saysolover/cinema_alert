@@ -13,7 +13,11 @@
     }
   },
   "_health": {
-    "consecutive_failures": 0
+    "consecutive_failures": 1,
+    "first_failure_at": "2026-10-16T07:55:25.759Z",
+    "last_kind": "transient",
+    "last_error": "movie.do 페이지에서 cgid를 찾지 못함 (페이지 구조 변경 가능성)",
+    "alerted": false
   },
   "트레인스포팅|아트하우스모모": {
     "since": "2026-10-11",
