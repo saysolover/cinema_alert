@@ -170,9 +170,10 @@ jobs:
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
-          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
-          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
-          const isSpecial = it => SPECIAL_RE.test([it.MovieNameKR, it.ScreenDivisionNameKR, it.AccompanyTypeNameKR, it.SequenceNoGroupNameKR, it.BkShowLabelTxtNm1, it.BkShowLabelTxtNm2].filter(Boolean).join(' '));
+          // 시사회·GV·무대인사·프리미어 같은 특별 상영도 일반 회차와 똑같이 센다(제외하지 않는다).
+          // 다만 알림에서 구별되도록 그런 표기가 붙은 이름은 따로 모아 메시지에 보여 준다.
+          const LABEL_RE = /프리미어|무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅|^\[/i;
+          const labelsOf = it => [it.MovieNameKR, it.ScreenDivisionNameKR, it.AccompanyTypeNameKR, it.SequenceNoGroupNameKR, it.BkShowLabelTxtNm1, it.BkShowLabelTxtNm2].filter(f => f && LABEL_RE.test(f)).map(f => String(f).trim());
 
           const kstToday = () => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
           const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
@@ -207,7 +208,7 @@ jobs:
             return { events, next };
           }
 
-          function buildMessage(movie, label, theater, events) {
+          function buildMessage(movie, label, theater, events, tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
             const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
@@ -215,6 +216,7 @@ jobs:
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(', ')}`; // 프리미어·GV 등 특별 표기가 붙은 회차
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
             return msg;
           }
@@ -321,11 +323,14 @@ jobs:
                 const entry = state[stateKey];
 
                 const cur = {};
+                const tags = new Set();
                 for (const playDate of dates) {
                   const items = await getPlaySequence(theater.cinemaID, movieCd, playDate);
                   if (items === null) continue;
                   // 요청한 영화의 회차만 센다(메가박스에서 다른 영화 회차가 섞여 내려온 사례가 있어 롯데에도 동일 방어).
-                  cur[playDate] = items.filter(it => String(it.RepresentationMovieCode) === String(movieCd) && !isSpecial(it)).length;
+                  const mine = items.filter(it => String(it.RepresentationMovieCode) === String(movieCd));
+                  cur[playDate] = mine.length;
+                  for (const it of mine) for (const l of labelsOf(it)) tags.add(l);
                 }
 
                 const { events, next } = evaluate(entry, cur, today);
@@ -333,7 +338,7 @@ jobs:
                   console.log(`"${keyword}" @ 롯데시네마 ${theater.name}: ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(keyword, '롯데시네마', theater.name, events) })
+                    body: JSON.stringify({ content: buildMessage(keyword, '롯데시네마', theater.name, events, [...tags]) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {

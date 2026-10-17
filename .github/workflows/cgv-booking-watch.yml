@@ -58,8 +58,9 @@ jobs:
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
-          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
-          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
+          // 시사회·GV·무대인사·프리미어 같은 특별 상영도 일반 회차와 똑같이 센다(제외하지 않는다).
+          // 다만 알림에서 구별되도록 그런 표기가 붙은 이름은 따로 모아 메시지에 보여 준다.
+          const LABEL_RE = /프리미어|무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅|^\[/i;
 
           function loadLines(file) {
             if (!fs.existsSync(file)) return [];
@@ -109,7 +110,7 @@ jobs:
             return { events, next };
           }
 
-          function buildMessage(movie, label, theater, events) {
+          function buildMessage(movie, label, theater, events, tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
             const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
@@ -117,6 +118,7 @@ jobs:
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(', ')}`; // 프리미어·GV 등 특별 표기가 붙은 회차
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
             return msg;
           }
@@ -183,6 +185,7 @@ jobs:
               for (const [siteName, siteNo] of Object.entries(SITES)) {
                 const stateKey = `${keyword}|${siteName}`;
                 const entry = state[stateKey];
+                const tags = new Set();
                 if (!shouldCheck(entry, today, followUpRun)) continue;
 
                 const days = await getJson(`${BASE}/api/v1/booking/searchSiteScnscYmdListByMov?coCd=A420&movNo=${movie.movNo}&siteNo=${siteNo}`);
@@ -195,9 +198,9 @@ jobs:
                 for (const d of days) {
                   const list = await getJson(`${BASE}/api/v1/booking/searchMovScnInfo?coCd=A420&siteNo=${siteNo}&scnYmd=${d.scnYmd}&movNo=${movie.movNo}&rtctlScopCd=08`);
                   if (list === null) { failed.add(fmtDate(d.scnYmd)); continue; }
-                  cur[fmtDate(d.scnYmd)] = list.filter(x =>
-                    (x.movNo === movie.movNo || (x.prodNm || '').includes(keyword)) && !SPECIAL_RE.test(x.prodNm || '')
-                  ).length;
+                  const mine = list.filter(x => x.movNo === movie.movNo || (x.prodNm || '').includes(keyword));
+                  cur[fmtDate(d.scnYmd)] = mine.length;
+                  for (const x of mine) if (LABEL_RE.test(x.prodNm || '')) tags.add(x.prodNm.trim());
                 }
                 // 상영일 목록에서 빠진 날짜(이전에 열려 있었음)는 닫힌 것으로 본다. 단, 이번에 조회 실패한 날짜는 제외.
                 for (const d of Object.keys((entry && entry.dates) || {})) if (!(d in cur) && !failed.has(d) && d >= today) cur[d] = 0;
@@ -208,7 +211,7 @@ jobs:
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(movie.movNm.trim(), 'CGV', siteName, events) })
+                    body: JSON.stringify({ content: buildMessage(movie.movNm.trim(), 'CGV', siteName, events, [...tags]) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
