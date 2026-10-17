@@ -2,7 +2,7 @@ name: CGV 예매 오픈 감시
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -131,7 +131,7 @@ jobs:
 
             const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
             const today = kstToday();
-            const followUpRun = new Date().getUTCMinutes() % 15 < 3;
+            const followUpRun = true; // CGV는 10분 간격으로만 호출하므로 추적 중인 항목도 매번 조회한다
             const siteNames = Object.keys(SITES);
             const todo = keywords.filter(k => siteNames.some(s => shouldCheck(state[`${k}|${s}`], today, followUpRun)));
             if (todo.length === 0) {
@@ -231,8 +231,8 @@ jobs:
           // 연속 실패 상태는 cgv_state.json의 "_health" 키에 저장한다.
           const HEALTH_FILE = 'cgv_state.json';
           const HEALTH_LABEL = 'CGV';
-          const CRON_MIN = 3; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용
-          const ALERT_AT = [6, 24];
+          const CRON_MIN = 10; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용(중계를 거치는 우회라 접속량을 줄여 10분)
+          const ALERT_AT = [2, 6]; // 10분 주기이므로 연속 2회(≈20분)째와 6회(≈1시간)째에 알린다
           const kst = ms => new Date(ms + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
 
           // prev: 저장된 _health. failed: 이번 실행이 실패인지. 반환: { health, messages }
@@ -250,7 +250,7 @@ jobs:
             const first = p.first_failure_at || new Date(nowMs).toISOString();
             let alerted = !!p.alerted;
             if (ALERT_AT.includes(n)) {
-              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === ALERT_AT[0] ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
               alerted = true;
             }
             return { health: { consecutive_failures: n, first_failure_at: first, last_error: errText.slice(0, 200), alerted }, messages };
