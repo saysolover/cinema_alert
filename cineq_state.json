@@ -1,10 +1,6 @@
 {
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-17T18:15:31.709Z",
-    "last_kind": "transient",
-    "last_error": "조회 HTTP 500",
-    "alerted": false
+    "consecutive_failures": 0
   },
   "트레인스포팅|신도림": {
     "since": "2026-10-13",
