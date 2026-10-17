@@ -59,6 +59,11 @@ jobs:
           const { chromium } = require('playwright-core');
           const fs = require('fs');
 
+          // 조용한 실패 방지: 차단(403)·HTML 오류 페이지·형식이 다른 응답을 "상영 없음"으로 넘기지 않고 실패로 센다.
+          const failures = []; // 이번 실행에서 못 끝낸 조회(사유 문자열)
+          let okCalls = 0;     // 이번 실행에서 정상 형식으로 받은 조회 수
+          const bodyHead = t => t.slice(0, 80).replace(/\s+/g, ' ');
+
           const KEYWORDS_FILE = 'keywords.txt';
           const THEATERS_FILE = 'theaters.txt';
           const STATE_FILE = 'cgv_state.json';
@@ -128,7 +133,9 @@ jobs:
             return msg;
           }
 
-          (async () => {
+          let browser = null;
+
+          async function main() {
             const keywords = loadLines(KEYWORDS_FILE);
             const SITES = loadCgvSites();
             if (keywords.length === 0 || Object.keys(SITES).length === 0) {
@@ -146,7 +153,7 @@ jobs:
               return;
             }
 
-            const browser = await chromium.launch({ channel: 'chrome' });
+            browser = await chromium.launch({ channel: 'chrome' });
             const page = await browser.newPage({
               userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             });
@@ -160,20 +167,39 @@ jobs:
               throw e;
             }
 
-            // CGV API가 가끔 JSON 대신 HTML 에러 페이지를 응답함(직접 확인됨) — 재시도 후 그래도 안 되면 빈 배열로 처리.
-            const getJson = url => page.evaluate(async u => {
-              for (let i = 0; i < 3; i++) {
-                try {
-                  const r = await fetch(u);
-                  return (await r.json()).data || [];
-                } catch (e) {
-                  if (i === 2) return null; // 실패는 "0회(닫힘)"와 구분해서 이번 판정에서 제외한다
-                  await new Promise(res => setTimeout(res, 2000));
+            // CGV API가 가끔 JSON 대신 HTML 에러 페이지를 응답함(직접 확인됨). 러너(해외 IP)에서는 403 차단 페이지가 온 적도 있다.
+            // 정상 응답은 {statusCode: 0, data: [...]} 형식이다. 그 밖의 응답은 재시도 후 null로 돌려 "0회(닫힘)"와 구분하고 실패로 센다.
+            const getJson = async url => {
+              const res = await page.evaluate(async u => {
+                let last = '';
+                for (let i = 0; i < 3; i++) {
+                  try {
+                    const r = await fetch(u);
+                    const t = await r.text();
+                    let j = null;
+                    try { j = JSON.parse(t); } catch (e) {}
+                    if (r.ok && j && j.statusCode === 0 && Array.isArray(j.data)) return { data: j.data };
+                    last = j ? `HTTP ${r.status}, statusCode=${j.statusCode}` : `비JSON 응답 HTTP ${r.status}: ${t.slice(0, 80).replace(/\s+/g, ' ')}`;
+                  } catch (e) {
+                    last = e.message;
+                  }
+                  if (i < 2) await new Promise(res => setTimeout(res, 2000));
                 }
-              }
-            }, url);
+                return { error: last };
+              }, url);
+              if (res.error) { failures.push(`CGV 요청 실패: ${res.error}`); console.log(`  (CGV 요청 실패: ${res.error})`); return null; }
+              okCalls++;
+              return res.data;
+            };
 
-            const chart = (await getJson('https://cgv.co.kr/api/v1/booking/searchAtktTopPostrList?coCd=A420')) || [];
+            const chart = await getJson('https://cgv.co.kr/api/v1/booking/searchAtktTopPostrList?coCd=A420');
+            if (chart === null || chart.length === 0) {
+              // 차트가 비었거나 받지 못하면 키워드가 "없는" 것이 아니라 조회가 안 된 것이다.
+              if (chart !== null) { failures.push('CGV 차트가 비어 있음'); okCalls--; }
+              console.log('CGV 차트를 가져오지 못해 이번 실행은 조회하지 않음');
+              await browser.close();
+              return;
+            }
             let stateChanged = false;
 
             for (const keyword of todo) {
@@ -211,7 +237,7 @@ jobs:
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(movie.movNm, 'CGV', siteName, events) })
+                    body: JSON.stringify({ content: buildMessage(movie.movNm.trim(), 'CGV', siteName, events) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
@@ -227,7 +253,67 @@ jobs:
 
             await browser.close();
             if (stateChanged) fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-          })();
+          }
+
+          // ---- 실행 결과(연속 실패) 관리 (디트릭스와 같은 규칙) ----
+          // 정상 응답을 하나도 못 받고 실패만 있었던 실행을 "실패"로 센다(일부 조회만 간헐적으로 실패하는 것은 정상 범위).
+          // 연속 6회와 24회째에만 알리고, 회복하면 한 번 알린다. 조회할 게 없던 실행은 연속 횟수를 건드리지 않는다.
+          // 연속 실패 상태는 cgv_state.json의 "_health" 키에 저장한다.
+          const HEALTH_FILE = 'cgv_state.json';
+          const HEALTH_LABEL = 'CGV';
+          const CRON_MIN = 3; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용
+          const ALERT_AT = [6, 24];
+          const kst = ms => new Date(ms + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
+
+          // prev: 저장된 _health. failed: 이번 실행이 실패인지. 반환: { health, messages }
+          function nextHealth(prev, failed, errText, nowMs) {
+            const p = prev || { consecutive_failures: 0 };
+            const messages = [];
+            if (!failed) {
+              if (p.consecutive_failures > 0 && p.alerted) {
+                const minutes = Math.round((nowMs - Date.parse(p.first_failure_at)) / 60000);
+                messages.push(`✅ ${HEALTH_LABEL} 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
+              }
+              return { health: { consecutive_failures: 0 }, messages };
+            }
+            const n = p.consecutive_failures + 1;
+            const first = p.first_failure_at || new Date(nowMs).toISOString();
+            let alerted = !!p.alerted;
+            if (ALERT_AT.includes(n)) {
+              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+              alerted = true;
+            }
+            return { health: { consecutive_failures: n, first_failure_at: first, last_error: errText.slice(0, 200), alerted }, messages };
+          }
+
+          async function run() {
+            let fatal = null;
+            try { await main(); } catch (e) { fatal = e; }
+            if (typeof browser !== 'undefined' && browser) await browser.close().catch(() => {});
+            if (fatal) console.log(fatal.stack || fatal.message);
+            const failed = !!fatal || (failures.length > 0 && okCalls === 0);
+            const idle = !fatal && failures.length === 0 && okCalls === 0;
+            if (idle) return;
+            const errText = fatal ? fatal.message : (failures[failures.length - 1] || '');
+            if (failed) console.log(`이번 실행은 실패로 집계: ${errText} (조회 실패 ${failures.length}건)`);
+            else if (failures.length) console.log(`조회 실패 ${failures.length}건이 있었지만 정상 응답도 ${okCalls}건 받아 실패로 세지 않음`);
+
+            const state = fs.existsSync(HEALTH_FILE) ? JSON.parse(fs.readFileSync(HEALTH_FILE, 'utf8')) : {};
+            const { health, messages } = nextHealth(state._health, failed, errText, Date.now());
+            for (const content of messages) {
+              const res = await fetch(process.env.DISCORD_WEBHOOK, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content })
+              });
+              console.log('Discord 응답 상태:', res.status);
+            }
+            // 한 번도 실패한 적 없으면 파일에 _health를 만들지 않는다(불필요한 커밋 방지).
+            if (state._health || failed) {
+              state._health = health;
+              fs.writeFileSync(HEALTH_FILE, JSON.stringify(state, null, 2));
+            }
+          }
+
+          run();
           SCRIPT_EOF
           node check_cgv.js
 
