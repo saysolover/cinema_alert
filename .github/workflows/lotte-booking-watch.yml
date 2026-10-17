@@ -140,6 +140,7 @@ jobs:
           node resolve_lotte.js
 
       - name: Check booking status and notify Discord
+        timeout-minutes: 6  # 조회가 멈춰도 job 전체(15분)가 아니라 몇 분 안에 끝나 실패 알림이 가게 함
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
@@ -149,6 +150,8 @@ jobs:
           // 조용한 실패 방지: 차단(403)·HTML 오류 페이지·형식이 다른 응답을 "상영 없음"으로 넘기지 않고 실패로 센다.
           const failures = []; // 이번 실행에서 못 끝낸 조회(사유 문자열)
           let okCalls = 0;     // 이번 실행에서 정상 형식으로 받은 조회 수
+          // cron 간격(3분)을 크게 넘기지 않도록 실행 시간 상한. 넘으면 남은 조회를 포기하고 이번 실행을 실패로 센다.
+          const DEADLINE = Date.now() + 4 * 60 * 1000;
           const bodyHead = t => t.slice(0, 80).replace(/\s+/g, ' ');
 
           function loadLines(file) {
@@ -233,7 +236,7 @@ jobs:
             let lastErr;
             for (let i = 0; i < attempts; i++) {
               try {
-                return await fetch(url, options);
+                return await fetch(url, { ...options, signal: AbortSignal.timeout(15000) }); // 응답이 안 오면 끊는다(예전엔 무한정 기다려 job이 15분 타임아웃까지 멈췄다)
               } catch (e) {
                 lastErr = e;
                 if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
@@ -265,6 +268,7 @@ jobs:
           }
 
           async function getPlaySequence(cinemaID, movieCd, playDate) {
+            if (Date.now() > DEADLINE) throw new Error('실행 시간 상한(4분) 초과 — 응답 지연으로 중단');
             const fd = new URLSearchParams();
             fd.append('paramList', JSON.stringify({
               MethodName: 'GetPlaySequence', channelType: 'HO', osType: 'W', osVersion: 'bot',
