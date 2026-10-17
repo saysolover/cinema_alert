@@ -2,7 +2,7 @@ name: CGV 예매 오픈 감시
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -30,33 +30,15 @@ jobs:
 
       # 설치 단계의 네트워크 실패(ECONNRESET 등)가 스크립트의 연속 실패 규칙 밖에서 실행을 실패시키므로,
       # node_modules를 캐시해 적중하면 npm을 건너뛰고, 미스면 재시도한다. 버전은 고정한다(캐시 키와 같이 올릴 것).
-      - name: Cache node_modules
-        id: npm-cache
-        uses: actions/cache@v5
-        with:
-          path: node_modules
-          key: node-modules-playwright-core-1.64.1
-
-      - name: Install Playwright
-        if: steps.npm-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 5  # npm이 멈춰도 몇 분 안에 failure로 끝나 실패 알림이 가게 함
-        run: |
-          npm init -y
-          for i in 1 2 3; do
-            npm install playwright-core@1.64.1 --fetch-retries=5 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=60000 && break
-            [ "$i" = 3 ] && exit 1
-            sleep 10
-          done
-
-      - name: Check Chrome
-        run: google-chrome --version  # 러너에 미리 깔린 Chrome 사용(브라우저·apt 설치 없음)
-
+      # 브라우저 없이 요청만 사용한다(설치 단계 없음).
       - name: Check CGV booking status and notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # cgv.co.kr은 GitHub 러너(해외·데이터센터 IP)를 403으로 막는다 → Cloudflare Worker 중계(relay/README_CGV.md)를 거친다.
+          CGV_RELAY_URL: ${{ secrets.CGV_RELAY_URL }}
+          CGV_RELAY_TOKEN: ${{ secrets.CGV_RELAY_TOKEN }}
         run: |
           cat > check_cgv.js << 'SCRIPT_EOF'
-          const { chromium } = require('playwright-core');
           const fs = require('fs');
 
           // 조용한 실패 방지: 차단(403)·HTML 오류 페이지·형식이 다른 응답을 "상영 없음"으로 넘기지 않고 실패로 센다.
@@ -67,6 +49,12 @@ jobs:
           const KEYWORDS_FILE = 'keywords.txt';
           const THEATERS_FILE = 'theaters.txt';
           const STATE_FILE = 'cgv_state.json';
+          const RELAY_URL = (process.env.CGV_RELAY_URL || '').trim().replace(/\/+$/, '');
+          const BASE = RELAY_URL || 'https://cgv.co.kr';
+          const RELAY_HEADERS = RELAY_URL ? { 'X-Relay-Token': (process.env.CGV_RELAY_TOKEN || '').trim() } : {};
+          // cron 간격 안에 끝내기 위한 실행 시간 상한. 넘으면 중단하고 실패로 센다.
+          const DEADLINE = Date.now() + 4 * 60 * 1000;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
@@ -133,8 +121,6 @@ jobs:
             return msg;
           }
 
-          let browser = null;
-
           async function main() {
             const keywords = loadLines(KEYWORDS_FILE);
             const SITES = loadCgvSites();
@@ -145,7 +131,7 @@ jobs:
 
             const state = fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {};
             const today = kstToday();
-            const followUpRun = new Date().getUTCMinutes() % 15 < 3;
+            const followUpRun = true; // CGV는 10분 간격으로만 호출하므로 추적 중인 항목도 매번 조회한다
             const siteNames = Object.keys(SITES);
             const todo = keywords.filter(k => siteNames.some(s => shouldCheck(state[`${k}|${s}`], today, followUpRun)));
             if (todo.length === 0) {
@@ -153,51 +139,36 @@ jobs:
               return;
             }
 
-            browser = await chromium.launch({ channel: 'chrome' });
-            const page = await browser.newPage({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            });
-
-            try {
-              await page.goto('https://cgv.co.kr', { waitUntil: 'domcontentloaded', timeout: 30000 });
-            } catch (e) {
-              await page.screenshot({ path: 'cgv_failure.png', fullPage: true }).catch(() => {});
-              fs.writeFileSync('cgv_failure.html', await page.content().catch(() => ''));
-              await browser.close();
-              throw e;
-            }
-
-            // CGV API가 가끔 JSON 대신 HTML 에러 페이지를 응답함(직접 확인됨). 러너(해외 IP)에서는 403 차단 페이지가 온 적도 있다.
-            // 정상 응답은 {statusCode: 0, data: [...]} 형식이다. 그 밖의 응답은 재시도 후 null로 돌려 "0회(닫힘)"와 구분하고 실패로 센다.
+            // 정상 응답은 {statusCode: 0, data: [...]} 형식이다. 차단(403) HTML·오류 형식·시간 초과는 재시도 후 null로 돌려
+            // "0회(닫힘)"·"차트에 없음"과 구분하고 실패로 센다.
             const getJson = async url => {
-              const res = await page.evaluate(async u => {
-                let last = '';
-                for (let i = 0; i < 3; i++) {
-                  try {
-                    const r = await fetch(u);
-                    const t = await r.text();
-                    let j = null;
-                    try { j = JSON.parse(t); } catch (e) {}
-                    if (r.ok && j && j.statusCode === 0 && Array.isArray(j.data)) return { data: j.data };
-                    last = j ? `HTTP ${r.status}, statusCode=${j.statusCode}` : `비JSON 응답 HTTP ${r.status}: ${t.slice(0, 80).replace(/\s+/g, ' ')}`;
-                  } catch (e) {
-                    last = e.message;
-                  }
-                  if (i < 2) await new Promise(res => setTimeout(res, 2000));
+              if (Date.now() > DEADLINE) throw new Error('실행 시간 상한(4분) 초과 — CGV 응답 지연으로 중단');
+              let last = '';
+              for (let i = 0; i < 3; i++) {
+                try {
+                  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', ...RELAY_HEADERS }, signal: AbortSignal.timeout(20000) });
+                  const t = await r.text();
+                  let j = null;
+                  try { j = JSON.parse(t); } catch (e) {}
+                  if (r.ok && j && j.statusCode === 0 && Array.isArray(j.data)) { okCalls++; return j.data; }
+                  last = j ? `HTTP ${r.status}, statusCode=${j.statusCode}` : `비JSON 응답 HTTP ${r.status}: ${bodyHead(t)}`;
+                  if (r.status === 401) { last += ' (중계 토큰 불일치 가능성)'; break; }
+                  if (r.status === 403 && !RELAY_URL) break; // 직접 접속이 막힌 것은 재시도해도 같다
+                } catch (e) {
+                  last = e.message;
                 }
-                return { error: last };
-              }, url);
-              if (res.error) { failures.push(`CGV 요청 실패: ${res.error}`); console.log(`  (CGV 요청 실패: ${res.error})`); return null; }
-              okCalls++;
-              return res.data;
+                if (i < 2) await sleep(2000);
+              }
+              failures.push(`CGV 요청 실패: ${last}`);
+              console.log(`  (CGV 요청 실패: ${last})`);
+              return null;
             };
 
-            const chart = await getJson('https://cgv.co.kr/api/v1/booking/searchAtktTopPostrList?coCd=A420');
+            const chart = await getJson(`${BASE}/api/v1/booking/searchAtktTopPostrList?coCd=A420`);
             if (chart === null || chart.length === 0) {
               // 차트가 비었거나 받지 못하면 키워드가 "없는" 것이 아니라 조회가 안 된 것이다.
               if (chart !== null) { failures.push('CGV 차트가 비어 있음'); okCalls--; }
               console.log('CGV 차트를 가져오지 못해 이번 실행은 조회하지 않음');
-              await browser.close();
               return;
             }
             let stateChanged = false;
@@ -214,7 +185,7 @@ jobs:
                 const entry = state[stateKey];
                 if (!shouldCheck(entry, today, followUpRun)) continue;
 
-                const days = await getJson(`https://cgv.co.kr/api/v1/booking/searchSiteScnscYmdListByMov?coCd=A420&movNo=${movie.movNo}&siteNo=${siteNo}`);
+                const days = await getJson(`${BASE}/api/v1/booking/searchSiteScnscYmdListByMov?coCd=A420&movNo=${movie.movNo}&siteNo=${siteNo}`);
                 if (days === null) {
                   console.log(`"${keyword}" @ CGV ${siteName}: 상영일 조회 실패 — 이번엔 스킵`);
                   continue;
@@ -222,7 +193,7 @@ jobs:
                 const cur = {};
                 const failed = new Set();
                 for (const d of days) {
-                  const list = await getJson(`https://cgv.co.kr/api/v1/booking/searchMovScnInfo?coCd=A420&siteNo=${siteNo}&scnYmd=${d.scnYmd}&movNo=${movie.movNo}&rtctlScopCd=08`);
+                  const list = await getJson(`${BASE}/api/v1/booking/searchMovScnInfo?coCd=A420&siteNo=${siteNo}&scnYmd=${d.scnYmd}&movNo=${movie.movNo}&rtctlScopCd=08`);
                   if (list === null) { failed.add(fmtDate(d.scnYmd)); continue; }
                   cur[fmtDate(d.scnYmd)] = list.filter(x =>
                     (x.movNo === movie.movNo || (x.prodNm || '').includes(keyword)) && !SPECIAL_RE.test(x.prodNm || '')
@@ -251,7 +222,6 @@ jobs:
               }
             }
 
-            await browser.close();
             if (stateChanged) fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
           }
 
@@ -261,8 +231,8 @@ jobs:
           // 연속 실패 상태는 cgv_state.json의 "_health" 키에 저장한다.
           const HEALTH_FILE = 'cgv_state.json';
           const HEALTH_LABEL = 'CGV';
-          const CRON_MIN = 3; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용
-          const ALERT_AT = [6, 24];
+          const CRON_MIN = 10; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용(중계를 거치는 우회라 접속량을 줄여 10분)
+          const ALERT_AT = [2, 6]; // 10분 주기이므로 연속 2회(≈20분)째와 6회(≈1시간)째에 알린다
           const kst = ms => new Date(ms + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
 
           // prev: 저장된 _health. failed: 이번 실행이 실패인지. 반환: { health, messages }
@@ -280,7 +250,7 @@ jobs:
             const first = p.first_failure_at || new Date(nowMs).toISOString();
             let alerted = !!p.alerted;
             if (ALERT_AT.includes(n)) {
-              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === ALERT_AT[0] ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
               alerted = true;
             }
             return { health: { consecutive_failures: n, first_failure_at: first, last_error: errText.slice(0, 200), alerted }, messages };
@@ -289,7 +259,6 @@ jobs:
           async function run() {
             let fatal = null;
             try { await main(); } catch (e) { fatal = e; }
-            if (typeof browser !== 'undefined' && browser) await browser.close().catch(() => {});
             if (fatal) console.log(fatal.stack || fatal.message);
             const failed = !!fatal || (failures.length > 0 && okCalls === 0);
             const idle = !fatal && failures.length === 0 && okCalls === 0;
@@ -316,17 +285,6 @@ jobs:
           run();
           SCRIPT_EOF
           node check_cgv.js
-
-      - name: Upload failure evidence
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: cgv-failure-evidence
-          path: |
-            cgv_failure.png
-            cgv_failure.html
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Commit updated state
         run: |
