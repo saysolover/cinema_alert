@@ -38,6 +38,15 @@ assert.deepStrictEqual(sample.new.split('\n').slice(4), ['2026-10-18 [예매하�
 assert(sample.more.startsWith('🎟 회차 추가 오픈!'));
 assert(sample.mixed.includes('추가 오픈: 2026-10-19 (+4회)'));
 assert(sample.many.length <= 1900 && sample.many.includes('상영일: 2026-10-10'));
+// 특별 상영 표기(tags): 상영일 줄 바로 다음 줄에 `표기: ...`로 보이고, 두 워크플로가 같다. 5개까지만, 없으면 줄이 없다.
+{
+  const ev = cases.new;
+  const withTags = k => build[k]('영화', k === 'dtryx' ? '디트릭스' : '씨네Q', '극장', ev, links(ev, k === 'dtryx' ? 'https://d.example/x' : 'https://c.example/x'), ['[프리미어] 영화', 'GV', 'a', 'b', 'c', 'd-six']);
+  const a = withTags('dtryx'), b = withTags('cineq');
+  assert.strictEqual(b.replace('씨네Q', '디트릭스').replace(/c\.example/g, 'd.example'), a, '표기: 형식이 다름');
+  assert.strictEqual(a.split('\n')[4], '표기: [프리미어] 영화, GV, a, b, c');
+  assert.strictEqual(build.dtryx('영화', '디트릭스', '극장', ev, [], []).includes('표기:'), false);
+}
 console.log('OK: 두 워크플로의 buildMessage가 같고, 같은 입력에 같은 형식을 낸다.');
 if (process.argv.includes('--show')) {
   const ev = cases.mixed;

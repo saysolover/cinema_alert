@@ -56,9 +56,10 @@ jobs:
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
-          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
-          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
-          const isSpecial = it => SPECIAL_RE.test([it.MovieNmNat, it.MovieNm, it.ScreenTypeNmNat].filter(Boolean).join(' '));
+          // 시사회·GV·무대인사·프리미어 같은 특별 상영도 일반 회차와 똑같이 센다(제외하지 않는다).
+          // 다만 알림에서 구별되도록 그런 표기가 붙은 이름은 따로 모아 메시지에 보여 준다.
+          const LABEL_RE = /프리미어|무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅|^\[/i;
+          const labelsOf = it => [it.MovieNmNat, it.MovieNm, it.ScreenTypeNmNat].filter(f => f && LABEL_RE.test(f)).map(f => String(f).trim());
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
           const norm = s => (s || '').replace(/[\s()]/g, '').toLowerCase();
@@ -116,7 +117,7 @@ jobs:
             `${PUBLIC_URL}/reserve/movie.do?BrandCd=${encodeURIComponent(theater.brandCd)}&CinemaCd=${encodeURIComponent(theater.cinemaCd)}&MovieCd=${encodeURIComponent(movieCd)}&PlaySDT=${encodeURIComponent(date)}`;
 
           // links: [{ date, url }]. [예매하기](<url>) 형태로 글자에 링크를 걸고, <>로 미리보기 카드가 붙지 않게 한다.
-          function buildMessage(movie, label, theater, events, links = []) {
+          function buildMessage(movie, label, theater, events, links = [], tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
             const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
@@ -124,6 +125,7 @@ jobs:
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(', ')}`; // 프리미어·GV 등 특별 표기가 붙은 회차
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
             for (const l of links) {
               const line = `\n${l.date} [예매하기](<${l.url}>)`;
@@ -248,13 +250,15 @@ jobs:
 
                 const cur = {};
                 const samples = {};
+                const tags = new Set();
                 for (const d of dates) {
                   const res = await getJson(`${BASE}/reserve/showseq_list.do?${qs(theater, movie.MovieCd, d)}`, headers);
                   if (!res || !Array.isArray(res.Showseqlist)) continue;
                   // 요청한 영화·영화관·날짜의 회차만 센다.
                   const items = res.Showseqlist.flatMap(g => g.MovieDetail || [])
-                    .filter(it => it.MovieCd === movie.MovieCd && it.CinemaCd === theater.cinemaCd && it.PlaySDT === d && !isSpecial(it));
+                    .filter(it => it.MovieCd === movie.MovieCd && it.CinemaCd === theater.cinemaCd && it.PlaySDT === d);
                   cur[d] = items.length;
+                  for (const it of items) for (const l of labelsOf(it)) tags.add(l);
                   if (items.length) samples[d] = items.slice(0, 3).map(it => `${it.CinemaNmNat} ${it.StartTime} ${it.MovieNmNat}(${it.MovieCd})`);
                 }
 
@@ -264,7 +268,7 @@ jobs:
                   console.log(`  → ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   for (const e of events) console.log(`  근거 ${e.date}: ${JSON.stringify(samples[e.date])}`);
                   const content = buildMessage(movie.MovieNmNat, '디트릭스', theater.name, events,
-                    events.map(e => ({ date: e.date, url: bookingUrl(theater, movie.MovieCd, e.date) })));
+                    events.map(e => ({ date: e.date, url: bookingUrl(theater, movie.MovieCd, e.date) })), [...tags]);
                   if (DRY) {
                     console.log(`  [시험 모드] 전송 생략. 메시지:\n${content}`);
                   } else {

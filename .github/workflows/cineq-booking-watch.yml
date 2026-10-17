@@ -50,8 +50,9 @@ jobs:
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
           const DAYS_AHEAD = 10;  // 오늘부터 조회할 날짜 수(씨네Q는 약 9일 앞까지 예매를 연다)
-          // 시사회·GV·무대인사 같은 특별 상영은 "일반 예매 오픈"으로 치지 않는다.
-          const SPECIAL_RE = /무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅/i;
+          // 시사회·GV·무대인사·프리미어 같은 특별 상영도 일반 회차와 똑같이 센다(제외하지 않는다).
+          // 다만 알림에서 구별되도록 그런 표기가 붙은 이름은 따로 모아 메시지에 보여 준다.
+          const LABEL_RE = /프리미어|무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅|^\[/i;
 
           const sleep = ms => new Promise(r => setTimeout(r, ms));
           const norm = s => (s || '').replace(/[\s()]/g, '').toLowerCase();
@@ -107,7 +108,7 @@ jobs:
           // 그래서 날짜 줄마다 같은 극장 시간표 페이지로 연결한다. 메시지 형식은 디트릭스와 같다(buildMessage는 두 파일이 글자까지 같아야 한다).
           const theaterUrl = theater => `${BASE}/Theater/Movie?TheaterCode=${encodeURIComponent(theater.code)}`;
 
-          function buildMessage(movie, label, theater, events, links = []) {
+          function buildMessage(movie, label, theater, events, links = [], tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
             const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
@@ -115,6 +116,7 @@ jobs:
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
+            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(', ')}`; // 프리미어·GV 등 특별 표기가 붙은 회차
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
             for (const l of links) {
               const line = `\n${l.date} [예매하기](<${l.url}>)`;
@@ -244,10 +246,12 @@ jobs:
 
                 const cur = {};
                 let movieTitle = null;
+                const tags = new Set();
                 for (const d of okDays) {
-                  const hits = byDate[d].filter(m => norm(m.title).includes(norm(keyword)) && !SPECIAL_RE.test(m.title));
+                  const hits = byDate[d].filter(m => norm(m.title).includes(norm(keyword)));
                   cur[d] = hits.reduce((n, m) => n + m.times, 0);
                   if (hits.length && !movieTitle) movieTitle = hits[0].title;
+                  for (const m of hits) if (LABEL_RE.test(m.title)) tags.add(m.title);
                 }
                 console.log(`"${keyword}" @ ${theater.name}: ${movieTitle ? `"${movieTitle}" ` : '상영작 목록에 아직 없음 '}날짜별 일반 회차 ${JSON.stringify(cur)}`);
 
@@ -255,7 +259,7 @@ jobs:
                 if (events.length > 0) {
                   console.log(`  → ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   const content = buildMessage(movieTitle || keyword, '씨네Q', theater.name, events,
-                    events.map(e => ({ date: e.date, url: theaterUrl(theater) })));
+                    events.map(e => ({ date: e.date, url: theaterUrl(theater) })), [...tags]);
                   if (DRY) {
                     console.log(`  [시험 모드] 전송 생략. 메시지:\n${content}`);
                   } else {
