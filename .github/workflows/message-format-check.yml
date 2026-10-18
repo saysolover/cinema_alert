@@ -3,6 +3,9 @@ name: 알림 메시지 형식 확인
 on:
   pull_request:
     paths:
+      - '.github/workflows/cgv-booking-watch.yml'
+      - '.github/workflows/lotte-booking-watch.yml'
+      - '.github/workflows/megabox-booking-watch.yml'
       - '.github/workflows/dtryx-booking-watch.yml'
       - '.github/workflows/cineq-booking-watch.yml'
       - 'scripts/check_message_format.js'

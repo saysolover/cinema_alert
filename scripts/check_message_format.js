@@ -44,10 +44,37 @@ assert(sample.many.length <= 1900 && sample.many.includes('상영일: 2026-10-10
   const withTags = k => build[k]('영화', k === 'dtryx' ? '디트릭스' : '씨네Q', '극장', ev, links(ev, k === 'dtryx' ? 'https://d.example/x' : 'https://c.example/x'), ['[프리미어] 영화', 'GV', 'a', 'b', 'c', 'd-six']);
   const a = withTags('dtryx'), b = withTags('cineq');
   assert.strictEqual(b.replace('씨네Q', '디트릭스').replace(/c\.example/g, 'd.example'), a, '표기: 형식이 다름');
-  assert.strictEqual(a.split('\n')[4], '표기: [프리미어] 영화, GV, a, b, c');
+  assert.strictEqual(a.split('\n')[4], '표기: [프리미어] 영화 · GV · a · b · c');
   assert.strictEqual(build.dtryx('영화', '디트릭스', '극장', ev, [], []).includes('표기:'), false);
 }
-console.log('OK: 두 워크플로의 buildMessage가 같고, 같은 입력에 같은 형식을 낸다.');
+// ---- specialMarks: 5개 영화사 워크플로에 복제된 같은 함수 ----
+const CHAINS = ['cgv', 'lotte', 'megabox', 'dtryx', 'cineq'];
+const marksSrc = chain => {
+  const text = fs.readFileSync(`.github/workflows/${chain}-booking-watch.yml`, 'utf8').replace(/\r\n/g, '\n');
+  const m = text.match(/^ {10}function specialMarks\([\s\S]*?\n {10}\}\n/m);
+  assert(m, `${chain}: specialMarks를 찾지 못함`);
+  return m[0].split('\n').map(l => l.slice(10)).join('\n');
+};
+const srcs = CHAINS.map(marksSrc);
+srcs.forEach((x, i) => assert.strictEqual(x, srcs[0], `specialMarks 소스가 ${CHAINS[i]}에서 다름 — 한쪽만 고치지 말 것`));
+const specialMarks = new Function(`${srcs[0]}\nreturn specialMarks;`)();
+const T = ['트레인스포팅'];
+const markCases = [
+  [['[F] 트레인스포팅'], 'F'],
+  [['[프리미어] 트레인스포팅', '프리미어'], '프리미어'],        // 메가박스 코엑스 실제 사례(이름 + 구분 필드)
+  [['트레인스포팅(프리미어DAY)'], '프리미어DAY'],               // CGV 오리 실제 사례
+  [['트레인스포팅 (GV)'], 'GV'],
+  [['GV 상영'], 'GV'],
+  [['트레인스포팅 아트그라피'], '아트그라피'],
+  [['[GV] 트레인스포팅 (시네마톡)', '무대인사'], 'GV·시네마톡·무대인사'],
+  [['트레인스포팅(4DX 2D)', '트레인스포팅(IMAX LASER 2D)', '트레인스포팅 [4DX]', '트레인스포팅(자막)'], ''], // 포맷은 특별 상영이 아니다
+  [['호프(SCREENX DOLBY ATMOS mix 2D, 해술이 아저씨가 말한 특가)'], ''],
+  [['트레인스포팅', ''], ''],
+  [['Ｔｒａｉｎｓｐｏｔｔｉｎｇ ［Ｆ］'], 'F'],                 // NFKC
+];
+for (const [names, want] of markCases) assert.strictEqual(specialMarks(names, T).join('·'), want, JSON.stringify(names));
+assert.strictEqual(specialMarks(['[a] x', '[b]', '[c]', '[d]', '[e]', '[f]', '[g]'], ['x']).length, 5, '최대 5개');
+console.log('OK: 두 워크플로의 buildMessage가 같고, 5개 워크플로의 specialMarks도 같으며, 같은 입력에 같은 형식을 낸다.');
 if (process.argv.includes('--show')) {
   const ev = cases.mixed;
   console.log('--- 디트릭스 ---\n' + build.dtryx('트레인스포팅', '디트릭스', '아트하우스모모', ev, ev.map(e => ({ date: e.date, url: `https://www.dtryx.com/reserve/movie.do?BrandCd=indieart&CinemaCd=000067&MovieCd=029763&PlaySDT=${e.date}` }))));

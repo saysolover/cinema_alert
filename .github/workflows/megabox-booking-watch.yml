@@ -165,10 +165,8 @@ jobs:
 
           const GROWTH = 4;       // 같은 날짜의 일반 회차가 이만큼 이상 늘면 "회차 추가 오픈"으로 알림
           const FOLLOW_DAYS = 7;  // 첫 알림 후 이 기간 동안만 새 날짜/추가 회차를 추적
-          // 시사회·GV·무대인사·프리미어 같은 특별 상영도 일반 회차와 똑같이 센다(제외하지 않는다).
-          // 다만 알림에서 구별되도록 그런 표기가 붙은 이름은 따로 모아 메시지에 보여 준다.
-          const LABEL_RE = /프리미어|무대인사|GV|시사|관객과의|스페셜|커튼콜|라이브|특별|상영회|팬미팅|팬 미팅|^\[/i;
-          const labelsOf = it => [it.movieNm, it.cttsTyDivCdNm, it.movieCttsNm].filter(f => f && LABEL_RE.test(f)).map(f => String(f).trim());
+          // 특별 상영(시사회·GV·무대인사·프리미어 등)도 일반 회차와 똑같이 센다. 알림에는 아래 specialMarks()가 뽑은 표시만 보인다.
+          const namesOf = it => [it.movieNm, it.cttsTyDivCdNm, it.movieCttsNm].filter(Boolean).map(String);
 
           const norm = s => (s || '').replace(/&#\d+;|&\w+;/g, '').replace(/[\s()]/g, '');
           const kstToday = () => new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -205,6 +203,32 @@ jobs:
             return { events, next };
           }
 
+          // 회차 이름에서 "특별 상영 표시"만 뽑는다(예: "[F] 제목" → F, "제목(프리미어DAY)" → 프리미어DAY, "GV 상영" → GV).
+          // 영화 제목(titles)을 지운 뒤 남은 [대괄호] 문구, 표시어(GV·프리미어·무대인사·시네마톡·아트그라피 등)가 든 (괄호), 표시어 자체만 남긴다.
+          // 2D·4DX·IMAX·자막 같은 상영 포맷은 특별 상영이 아니므로 뺀다. 중복은 제거하고 최대 5개.
+          // 이 함수는 5개 영화사 워크플로에 같은 글자로 들어 있다(scripts/check_message_format.js가 같은지 확인한다).
+          function specialMarks(names, titles = []) {
+            const clean = s => String(s || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+            const KNOWN = /프리미어(?: ?DAY)?|PREMIERE|GV|무대인사|시네마톡|아트그라피|스페셜|시사회?|관객과의 ?대화|커튼콜|라이브|특별 ?상영|팬 ?미팅|상영회|오케스트라/i;
+            const FORMAT = /^(?:[234]D|4DX|IMAX|SCREENX|DOLBY|ATMOS|LASER|MX4D|ULTRA|SUITE|MIX|ONLY|자막|더빙|[\s,+&·/-])+$/i;
+            const marks = [];
+            const add = m => {
+              m = clean(m);
+              if (m && !FORMAT.test(m) && !marks.some(x => x.toLowerCase() === m.toLowerCase())) marks.push(m);
+            };
+            const esc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const ts = titles.map(clean).filter(Boolean).sort((a, b) => b.length - a.length);
+            for (const raw of names) {
+              let s = clean(raw);
+              for (const t of ts) s = s.replace(new RegExp(esc(t), 'ig'), ' ');
+              s = clean(s);
+              s = s.replace(/\[([^\]]*)\]/g, (_, g) => { add(g); return ' '; });
+              s = s.replace(/\(([^)]*)\)/g, (_, g) => { if (KNOWN.test(g)) add(g); return ' '; });
+              for (const m of s.match(new RegExp(KNOWN.source, 'ig')) || []) add(m);
+            }
+            return marks.slice(0, 5);
+          }
+
           function buildMessage(movie, label, theater, events, tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
@@ -213,7 +237,7 @@ jobs:
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
             let msg = `${title}\n영화: ${movie}\n극장: ${label} ${theater}\n상영일: ${dates}`;
-            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(', ')}`; // 프리미어·GV 등 특별 표기가 붙은 회차
+            if (tags.length) msg += `\n표기: ${tags.slice(0, 5).join(' · ')}`; // 프리미어·GV 등 특별 상영 표시(포맷은 제외)
             if (news.length && more.length) msg += `\n추가 오픈: ${more.map(e => `${e.date} (+${e.added}회)`).join(', ')}`;
             return msg;
           }
@@ -303,7 +327,7 @@ jobs:
 
               const counts = {}; // counts[극장이름][YYYY-MM-DD] = 일반 회차 수 (조회 성공한 날짜만, 0 포함)
               const samples = {}; // 알림 근거 확인용 로그
-              const tagsBy = {};  // tagsBy[극장이름] = 특별 표기가 붙은 이름 모음
+              const tagsBy = {};  // tagsBy[극장이름] = 센 회차들의 이름 모음(표시 추출용)
               for (const areaCd of new Set(pending.map(t => t.areaCd))) {
                 const targets = pending.filter(t => t.areaCd === areaCd);
                 for (const playDe of dates) {
@@ -323,7 +347,7 @@ jobs:
                       (it.brchNm || '').includes(theater.name) && it.playDe === playDe &&
                       [it.movieNo, it.rpstMovieNo].includes(movieNo) &&
                       it.bokdAbleAt === 'Y' && it.brchBokdUnableAt !== 'Y');
-                    for (const it of hits) for (const l of labelsOf(it)) (tagsBy[theater.name] = tagsBy[theater.name] || new Set()).add(l);
+                    for (const it of hits) for (const n of namesOf(it)) (tagsBy[theater.name] = tagsBy[theater.name] || new Set()).add(n);
                     (counts[theater.name] = counts[theater.name] || {})[fmtDate(playDe)] = hits.length;
                     if (hits.length > 0) (samples[theater.name] = samples[theater.name] || {})[fmtDate(playDe)] = hits.slice(0, 3).map(it => `${it.brchNm} ${it.playStartTime} ${it.movieNm}(${it.movieNo}/${it.rpstMovieNo}) bokd=${it.bokdAbleAt}`);
                   }
@@ -340,7 +364,7 @@ jobs:
                   for (const e of events) console.log(`  근거 ${e.date}: ${JSON.stringify((samples[theater.name] || {})[e.date])}`);
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(keyword, '메가박스', theater.name, events, [...(tagsBy[theater.name] || [])]) })
+                    body: JSON.stringify({ content: buildMessage(keyword, '메가박스', theater.name, events, specialMarks([...(tagsBy[theater.name] || [])], [keyword])) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
