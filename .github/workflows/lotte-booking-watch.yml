@@ -28,6 +28,17 @@ jobs:
         with:
           node-version: '20'
 
+      # 키워드 해결을 마지막으로 시도한 시각(15분 간격 재시도용)은 알림 판단과 무관한 휘발성 값이라 git에 커밋하지 않고
+      # actions/cache에 둔다(키에 run_id를 붙여 저장하고 restore-keys로 가장 최근 것을 복원). 캐시가 없어도 안전하다:
+      # 그때는 바로 다시 시도할 뿐이다.
+      - name: Restore resolve-attempt times
+        uses: actions/cache/restore@v5
+        with:
+          path: lotte_resolve_attempts.json
+          key: lotte-resolve-attempts-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            lotte-resolve-attempts-
+
       - name: Check whether movie-code resolution is needed
         id: precheck
         run: |
@@ -40,7 +51,7 @@ jobs:
           const readJson = (f, d) => fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : d;
           const keywords = fs.existsSync('keywords.txt') ? fs.readFileSync('keywords.txt', 'utf8').split('\n').map(s => s.trim()).filter(Boolean) : [];
           const cache = readJson('lotte_movie_cache.json', {});
-          const attempts = readJson('lotte_state.json', {})._resolve || {};
+          const attempts = readJson('lotte_resolve_attempts.json', null) || readJson('lotte_state.json', {})._resolve || {};
           const now = Date.now();
           const missing = keywords.filter(k => !cache[k]);
           const due = missing.filter(k => !(attempts[k] && now - Date.parse(attempts[k]) < RETRY_MS));
@@ -83,9 +94,9 @@ jobs:
           const fs = require('fs');
 
           const cache = fs.existsSync('lotte_movie_cache.json') ? JSON.parse(fs.readFileSync('lotte_movie_cache.json', 'utf8')) : {};
-          const hadStateFile = fs.existsSync('lotte_state.json');
-          const state = hadStateFile ? JSON.parse(fs.readFileSync('lotte_state.json', 'utf8')) : {};
-          const attempts = state._resolve || {}; // 키워드별 마지막 시도 시각 — 15분에 한 번만 다시 시도하려는 기록
+          const state = fs.existsSync('lotte_state.json') ? JSON.parse(fs.readFileSync('lotte_state.json', 'utf8')) : {};
+          // 키워드별 마지막 시도 시각 — 15분에 한 번만 다시 시도하려는 기록(커밋하지 않는 lotte_resolve_attempts.json, 예전 상태 파일의 _resolve는 이어받는다)
+          const attempts = (fs.existsSync('lotte_resolve_attempts.json') ? JSON.parse(fs.readFileSync('lotte_resolve_attempts.json', 'utf8')) : state._resolve) || {};
           // 앞 단계(resolve_due.js)가 "지금 시도할 차례"인 키워드만 골라 둔다.
           const due = JSON.parse(fs.readFileSync('resolve_due.json', 'utf8'));
 
@@ -132,12 +143,20 @@ jobs:
             await browser.close();
             fs.writeFileSync('lotte_movie_cache.json', JSON.stringify(cache, null, 2));
             console.log('캐시 파일 저장 완료:', JSON.stringify(cache));
-            // 시도 기록은 상태 파일의 _resolve에 둔다(이미 상태 커밋 대상). 기록이 없고 파일도 없었다면 새로 만들지 않는다.
-            if (Object.keys(attempts).length) state._resolve = attempts; else delete state._resolve;
-            if (hadStateFile || state._resolve) fs.writeFileSync('lotte_state.json', JSON.stringify(state, null, 2));
+            // 시도 기록은 커밋하지 않는 파일에 둔다(매 실행 시각만 바뀌어 하루 수백 건의 상태 커밋이 생기던 것을 막는다).
+            fs.writeFileSync('lotte_resolve_attempts.json', JSON.stringify(attempts));
+            // 예전 방식으로 상태 파일에 남아 있던 _resolve는 한 번만 지운다.
+            if (state._resolve) { delete state._resolve; fs.writeFileSync('lotte_state.json', JSON.stringify(state, null, 2)); }
           })();
           SCRIPT_EOF
           node resolve_lotte.js
+
+      - name: Save resolve-attempt times
+        if: always() && steps.precheck.outputs.need_resolution == 'true' && hashFiles('lotte_resolve_attempts.json') != ''
+        uses: actions/cache/save@v5
+        with:
+          path: lotte_resolve_attempts.json
+          key: lotte-resolve-attempts-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Check booking status and notify Discord
         timeout-minutes: 6  # 조회가 멈춰도 job 전체(15분)가 아니라 몇 분 안에 끝나 실패 알림이 가게 함
