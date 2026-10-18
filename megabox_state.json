@@ -39,13 +39,11 @@
   "트레인스포팅|코엑스": {
     "since": "2026-10-17",
     "dates": {
-      "2026-10-21": 1
+      "2026-10-21": 1,
+      "2026-10-22": 1
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-18T06:16:30.749Z",
-    "last_error": "실행 시간 상한(4분) 초과 — 응답 지연으로 중단",
-    "alerted": false
+    "consecutive_failures": 0
   }
 }
