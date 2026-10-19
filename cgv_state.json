@@ -34,7 +34,7 @@
     }
   },
   "_health": {
-    "consecutive_failures": 19,
+    "consecutive_failures": 20,
     "first_failure_at": "2026-10-19T17:00:54.004Z",
     "last_error": "CGV 요청 실패: 비JSON 응답 HTTP 200: <!DOCTYPE html> <html lang=\"ko\"> <head> <meta charset=\"UTF-8\" /> <meta",
     "alerted": true
