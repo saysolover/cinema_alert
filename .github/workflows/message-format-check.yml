@@ -9,6 +9,10 @@ on:
       - '.github/workflows/dtryx-booking-watch.yml'
       - '.github/workflows/cineq-booking-watch.yml'
       - 'scripts/check_message_format.js'
+      - 'scripts/seat_lib.js'
+      - 'scripts/seat_watch.js'
+      - 'scripts/check_seat_watch.js'
+      - '.github/workflows/seat-watch.yml'
 
 jobs:
   check:
@@ -20,3 +24,4 @@ jobs:
         with:
           node-version: '20'
       - run: node scripts/check_message_format.js
+      - run: node scripts/check_seat_watch.js
