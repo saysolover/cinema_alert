@@ -1,7 +1,8 @@
 name: 시간표 동기화
 
 # theaters.txt 영화관별 7일치 상영 시간표를 watch/schedules.json에 저장한다(디스코드 봇 자동완성용, B7). 설명: watch/README.md
-# 구조(회차 목록)가 바뀐 때와 6시간마다만 파일을 쓰고 커밋한다.
+# 파일은 main이 아니라 이력 없는 전용 브랜치 watch-data에 커밋 1개만 두고 강제 푸시한다(447KB가 매시간 쌓이는 것을 막는다).
+# 봇은 ref=watch-data의 watch/schedules.json을 읽는다. 이전 내용(실패한 영화관 유지용)은 같은 브랜치에서 가져온다.
 on:
   schedule:
     - cron: '7 * * * *'
@@ -28,32 +29,48 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
+      - name: Fetch previous schedules
+        run: |
+          if git fetch --depth=1 origin watch-data 2>/dev/null; then
+            git show FETCH_HEAD:watch/schedules.json > watch/schedules.json && echo "지난 시간표를 가져옴" || rm -f watch/schedules.json
+          else
+            echo "watch-data 브랜치가 아직 없음(첫 실행)"
+          fi
+
       - name: Sync schedules
+        id: sync
         env:
           CGV_RELAY_URL: ${{ secrets.CGV_RELAY_URL }}
           CGV_RELAY_TOKEN: ${{ secrets.CGV_RELAY_TOKEN }}
           DTRYX_RELAY_URL: ${{ secrets.DTRYX_RELAY_URL }}
           DTRYX_RELAY_TOKEN: ${{ secrets.DTRYX_RELAY_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
-        run: node scripts/schedule_sync.js
-
-      # 봇과 seat-watch가 watch/ 안의 다른 파일을 갱신하므로 rebase 후 push.
-      - name: Commit schedules
-        if: inputs.dry_run != true
         run: |
-          if [ -n "$(git status --porcelain watch/schedules.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add watch/schedules.json
-            git commit -m "chore: update schedules"
-            for i in 1 2 3; do
-              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
-              sleep 3
-            done
-            exit 1
-          else
-            echo "시간표 변경 없음"
-          fi
+          before=$(sha256sum watch/schedules.json 2>/dev/null | cut -d' ' -f1)
+          node scripts/schedule_sync.js
+          after=$(sha256sum watch/schedules.json 2>/dev/null | cut -d' ' -f1)
+          if [ "$before" != "$after" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      # 새 파일은 부모 없는 커밋 1개로 만들어 watch-data에 강제 푸시한다. main 이력에는 아무것도 쌓이지 않는다.
+      - name: Publish to watch-data
+        if: steps.sync.outputs.changed == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          d=$(mktemp -d)
+          mkdir -p "$d/watch" && cp watch/schedules.json "$d/watch/schedules.json"
+          cd "$d"
+          git init -q -b watch-data
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add watch/schedules.json
+          git commit -q -m "chore: schedules snapshot"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for i in 1 2 3; do
+            git push -q --force origin watch-data && exit 0
+            sleep 3
+          done
+          exit 1
 
       - name: Notify Discord on failure
         if: failure()
