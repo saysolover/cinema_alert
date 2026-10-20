@@ -1,0 +1,66 @@
+name: 시간표 동기화
+
+# theaters.txt 영화관별 7일치 상영 시간표를 watch/schedules.json에 저장한다(디스코드 봇 자동완성용, B7). 설명: watch/README.md
+# 구조(회차 목록)가 바뀐 때와 6시간마다만 파일을 쓰고 커밋한다.
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '시험 모드(파일 쓰기 없음)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: schedule-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Sync schedules
+        env:
+          CGV_RELAY_URL: ${{ secrets.CGV_RELAY_URL }}
+          CGV_RELAY_TOKEN: ${{ secrets.CGV_RELAY_TOKEN }}
+          DTRYX_RELAY_URL: ${{ secrets.DTRYX_RELAY_URL }}
+          DTRYX_RELAY_TOKEN: ${{ secrets.DTRYX_RELAY_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/schedule_sync.js
+
+      # 봇과 seat-watch가 watch/ 안의 다른 파일을 갱신하므로 rebase 후 push.
+      - name: Commit schedules
+        if: inputs.dry_run != true
+        run: |
+          if [ -n "$(git status --porcelain watch/schedules.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add watch/schedules.json
+            git commit -m "chore: update schedules"
+            for i in 1 2 3; do
+              git pull --rebase origin "$GITHUB_REF_NAME" && git push && exit 0
+              sleep 3
+            done
+            exit 1
+          else
+            echo "시간표 변경 없음"
+          fi
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -H 'Content-Type: application/json' \
+            -d "{\"content\":\"⚠️ 시간표 동기화 실패 — 자동완성 목록이 오래될 수 있음\n$RUN_URL\"}" \
+            "$DISCORD_WEBHOOK" || true
