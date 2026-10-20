@@ -44,7 +44,8 @@ jobs:
           // 조용한 실패 방지: 차단(403)·HTML 오류 페이지·형식이 다른 응답을 "상영 없음"으로 넘기지 않고 실패로 센다.
           const failures = []; // 이번 실행에서 못 끝낸 조회(사유 문자열)
           let okCalls = 0;     // 이번 실행에서 정상 형식으로 받은 조회 수
-          const bodyHead = t => t.slice(0, 80).replace(/\s+/g, ' ');
+          // 비JSON·오류 응답은 <title>과 앞 300자를 로그에 남긴다(점검 페이지와 차단 페이지를 구분하기 위함).
+          const bodyHead = t => { const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(t) || [])[1]; return (title ? `[title: ${title.replace(/\s+/g, ' ').trim().slice(0, 80)}] ` : '') + t.slice(0, 300).replace(/\s+/g, ' '); };
 
           const KEYWORDS_FILE = 'keywords.txt';
           const THEATERS_FILE = 'theaters.txt';
@@ -260,7 +261,10 @@ jobs:
           const HEALTH_LABEL = 'CGV';
           const CRON_MIN = 10; // 호출 주기(분) — 알림 문구의 "약 N분" 계산용(중계를 거치는 우회라 접속량을 줄여 10분)
           const ALERT_AT = [2, 6]; // 10분 주기이므로 연속 2회(≈20분)째와 6회(≈1시간)째에 알린다
+          const QUIET_END_HOUR = 7; // 새벽(00:00~07:00 KST)에는 첫 경고를 늦춘다. 감시는 그대로 돌고, 07시에도 실패 중이면 그때 바로 알린다
+          const QUIET_ALERT_MIN = 240; // 새벽에는 연속 실패가 이만큼(분, ≈4시간) 이어져야 경고 — 상수는 이 한 곳
           const kst = ms => new Date(ms + 9 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
+          const kstHour = ms => new Date(ms + 9 * 60 * 60 * 1000).getUTCHours();
 
           // prev: 저장된 _health. failed: 이번 실행이 실패인지. 반환: { health, messages }
           function nextHealth(prev, failed, errText, nowMs) {
@@ -276,11 +280,16 @@ jobs:
             const n = p.consecutive_failures + 1;
             const first = p.first_failure_at || new Date(nowMs).toISOString();
             let alerted = !!p.alerted;
-            if (ALERT_AT.includes(n)) {
-              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (n === ALERT_AT[0] ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
+            const quiet = kstHour(nowMs) < QUIET_END_HOUR;
+            const due = ALERT_AT.filter(t => n >= t && (!quiet || n * CRON_MIN >= QUIET_ALERT_MIN)).length; // 지금 알려야 할 단계 수
+            const stage = p.alert_stage ?? (p.alerted ? 1 : 0); // 이미 알린 단계
+            let newStage = stage;
+            if (due > stage) {
+              messages.push(`⚠️ ${HEALTH_LABEL} 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kst(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
               alerted = true;
             }
-            return { health: { consecutive_failures: n, first_failure_at: first, last_error: errText.slice(0, 200), alerted }, messages };
+            if (due > stage) newStage = due;
+            return { health: { consecutive_failures: n, first_failure_at: first, last_error: errText.slice(0, 200), alerted, alert_stage: newStage }, messages };
           }
 
           async function run() {
