@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const L = require('./seat_lib');
-const { run } = require('./seat_watch');
+const { run, loop } = require('./seat_watch');
 
 // ---- 1. 영화관별 파서 5종 (실제 응답 모양을 줄인 샘플) ----
 {
@@ -97,10 +97,13 @@ const { run } = require('./seat_watch');
 
   const far = { date: '2026-10-26', time: '19:30' }, near = { date: '2026-10-24', time: '20:00' };
   assert.strictEqual(L.everyMs(far, T), 5 * 60000);
-  assert.strictEqual(L.everyMs(near, T), 3 * 60000, '상영 24시간 전부터 3분');
-  assert.strictEqual(L.isDue({ checked_at: T }, far, T + 3 * 60000), false, '먼 회차는 3분 뒤엔 아직');
-  assert.strictEqual(L.isDue({ checked_at: T }, far, T + 5 * 60000 - 20000), true, '5분 주기(지터 여유)');
-  assert.strictEqual(L.isDue({ checked_at: T }, near, T + 3 * 60000 - 20000), true);
+  assert.strictEqual(L.everyMs(near, T, 'LOTTE'), 60000, '상영 24시간 전부터 1분');
+  assert.strictEqual(L.everyMs(near, T, 'CGV'), 120000, 'CGV는 2분');
+  assert.strictEqual(L.isDue({ checked_at: T }, far, T + 3 * 60000, 'LOTTE'), false, '먼 회차는 3분 뒤엔 아직');
+  assert.strictEqual(L.isDue({ checked_at: T }, far, T + 5 * 60000 - 20000, 'LOTTE'), true, '5분 주기(지터 여유)');
+  assert.strictEqual(L.isDue({ checked_at: T }, near, T + 60000, 'LOTTE'), true, '가까운 회차는 1분마다');
+  assert.strictEqual(L.isDue({ checked_at: T }, near, T + 60000, 'CGV'), false, 'CGV는 1분 뒤엔 아직');
+  assert.strictEqual(L.isDue({ checked_at: T }, near, T + 120000, 'CGV'), true, 'CGV는 2분');
   assert.strictEqual(L.isDue(undefined, far, T), true);
 
   assert.strictEqual(L.isExpired({ date: '2026-10-24', time: '10:00' }, T), true, '상영 시작이 지나면 삭제');
@@ -113,12 +116,12 @@ const { run } = require('./seat_watch');
   const kst = (day, h) => Date.UTC(2026, 9, day, h - 9, 0);
   const go = (startMs, count) => {
     let h, sent = [];
-    for (let i = 0; i < count; i++) { const r = L.nextHealth(h, true, 'HTTP 200: <html>', startMs + i * 3 * 60000); h = r.health; if (r.messages.length) sent.push(h.consecutive_failures); }
+    for (let i = 0; i < count; i++) { const r = L.nextHealth(h, true, 'HTTP 200: <html>', startMs + i * 5 * 60000); h = r.health; if (r.messages.length) sent.push(h.consecutive_failures); }
     return { sent, h };
   };
   assert.deepStrictEqual(go(kst(20, 12), 30).sent, [6, 24]);
-  assert.deepStrictEqual(go(kst(21, 0), 79).sent, [], '새벽 4시간(80회) 전엔 조용');
-  assert.deepStrictEqual(go(kst(21, 0), 80).sent, [80], '새벽 4시간째에 한 통');
+  assert.deepStrictEqual(go(kst(21, 0), 47).sent, [], '새벽 4시간(48회) 전엔 조용');
+  assert.deepStrictEqual(go(kst(21, 0), 48).sent, [48], '새벽 4시간째에 한 통');
   const night = go(kst(21, 5), 20);
   assert.strictEqual(L.nextHealth(night.h, true, 'x', kst(21, 7)).messages.length, 1, '07시에도 실패 중이면 바로');
   assert.strictEqual(L.nextHealth(go(kst(20, 12), 6).h, false, '', kst(20, 13)).messages.length, 1, '복구 알림');
@@ -209,6 +212,54 @@ const { run } = require('./seat_watch');
   sent.length = 0;
   await go(400, { dry: true });
   assert.deepStrictEqual([fs.readFileSync(paths.seats, 'utf8'), sent.length], [snap, 0]);
+
+  // ---- 한 번의 실행 안에서 반복 확인(loop) ----
+  {
+    const T1 = Date.UTC(2026, 9, 25, 5, 0); // 10/25 14:00 KST → 19:30 회차는 5.5시간 뒤(24시간 안)
+    const mk = () => { let t = T1; const naps = []; return { clock: () => t, sleep: async ms => { naps.push(ms); t += ms; }, naps }; };
+    const loopGo = (c, over = {}) => loop({ env: { SEAT_TEST: '1' }, paths, fetchFn, send: async t => sent.push(t), log: () => {}, clock: c.clock, sleep: c.sleep, ...over });
+    write([entry({ id: 'L1', show_id: '0013-20261025-003-2', expires_at: '2026-10-26T00:00:00Z' })]);
+    fs.writeFileSync(paths.state, '{}');
+    mode = 'ok'; remain = 0; sent.length = 0;
+
+    // CGV만: 2분 간격, 예산 안에서 3번. 중간에 풀리면 한 번만 알린다.
+    let c = mk(); calls = 0;
+    let fetchesAt = [];
+    const base = fetchFn;
+    const timed = async url => { fetchesAt.push(c.clock() - T1); if (fetchesAt.length === 2) remain = 3; return base(url); };
+    r = await loopGo(c, { fetchFn: timed });
+    assert.deepStrictEqual([r.passes, c.naps], [3, [120000, 120000]], 'CGV만 가까우면 2분 간격 3회');
+    assert.strictEqual(sent.filter(x => x.includes('🎟')).length, 1, '반복 확인 중 한 번만 알림');
+    let st = JSON.parse(fs.readFileSync(paths.state, 'utf8'));
+    assert.strictEqual(st._health.consecutive_failures, 0, '정상 실행');
+
+    // 다른 영화사 회차가 가까우면 1분 간격 5회(예산 255초)
+    const lotteFetch = async url => ({ ok: true, status: 200, text: async () => JSON.stringify({ PlaySeqs: { Items: [{ CinemaID: 1016, ScreenID: 1211, PlayDt: '2026-10-25', PlaySequence: 3, MovieNameKR: '트레인스포팅', StartTime: '19:30', TotalSeatCount: 8, BookingSeatCount: 0, ScreenNameKR: '11관' }] } }) });
+    fs.writeFileSync(paths.theaters, 'CGV,용산,0013\nLOTTE,월드타워,1|0001|1016\n');
+    write([entry({ id: 'L2', theater: 'LOTTE 월드타워', theater_key: 'LOTTE,월드타워,1|0001|1016', show_id: '1016-1211-2026-10-25-3', expires_at: '2026-10-26T00:00:00Z' })]);
+    fs.writeFileSync(paths.state, '{}');
+    c = mk(); r = await loopGo(c, { fetchFn: lotteFetch });
+    assert.deepStrictEqual([r.passes, c.naps.length, c.naps[0]], [5, 4, 60000], '가까운 회차가 있으면 1분 간격 5회');
+
+    // 24시간 밖이면 한 번만 확인하고 바로 끝낸다
+    write([entry({ id: 'L3', theater: 'LOTTE 월드타워', theater_key: 'LOTTE,월드타워,1|0001|1016', date: '2026-10-27', show_id: 'x', expires_at: '2026-10-28T00:00:00Z' })]);
+    fs.writeFileSync(paths.state, '{}');
+    c = mk(); calls = 0; r = await loopGo(c, { fetchFn: lotteFetch });
+    assert.deepStrictEqual([r.passes, c.naps.length], [1, 0], '먼 회차만 있으면 한 번');
+
+    // 목록이 비면 한 번도 조회하지 않고 끝난다
+    write([]); c = mk(); calls = 0;
+    r = await loopGo(c);
+    assert.deepStrictEqual([r.passes, calls], [1, 0]);
+
+    // 연속 실패는 실행 한 번에 한 번만 센다(반복 확인 5번이 5회가 아님)
+    write([entry({ id: 'L4', theater: 'LOTTE 월드타워', theater_key: 'LOTTE,월드타워,1|0001|1016', show_id: '1016-1211-2026-10-25-3', expires_at: '2026-10-26T00:00:00Z' })]);
+    fs.writeFileSync(paths.state, '{}');
+    c = mk();
+    r = await loopGo(c, { fetchFn: async () => ({ ok: false, status: 403, text: async () => '<html><title>차단</title></html>' }) });
+    st = JSON.parse(fs.readFileSync(paths.state, 'utf8'));
+    assert.deepStrictEqual([r.passes, st._health.consecutive_failures], [5, 1], '실패도 실행 단위로 1');
+  }
 
   console.log('OK: 영화관별 잔여석 파서 5종, 회차 찾기, 0→N·중복 방지·주기·만료, 연속 실패 규칙, 전체 실행(가짜 응답)이 맞다.');
 })().catch(e => { console.error(e); process.exit(1); });

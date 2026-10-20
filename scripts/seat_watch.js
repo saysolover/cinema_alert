@@ -1,5 +1,5 @@
 // 취소표 감시(B7): watch/seats.json에 등록된 회차의 잔여석이 기준 미만 → 이상으로 늘면 디스코드로 알린다.
-// 실행: node scripts/seat_watch.js   (워크플로 seat-watch가 cron-job.org의 workflow_dispatch로 3분마다 호출)
+// 실행: node scripts/seat_watch.js   (워크플로 seat-watch가 cron-job.org의 workflow_dispatch로 5분마다 호출, 실행 안에서 반복 확인)
 // 규칙은 scripts/seat_lib.js, 테스트는 scripts/check_seat_watch.js.
 'use strict';
 const fs = require('fs');
@@ -136,6 +136,7 @@ async function run(ctx) {
   let okCalls = 0;
   const fetchers = makeFetchers(env, ctx.fetchFn || fetch, now + 4 * 60 * 1000 + (ctx.deadlineExtra || 0));
   const cache = {};
+  const nearChains = new Set(); // 상영 24시간 안인 회차가 있는 영화사(실행 안에서 반복 확인할지 정한다)
 
   async function sessionsFor(t, date, movie) {
     const key = `${t.chain}|${t.name}|${date}|${t.chain === 'DTRYX' ? L.norm(movie) : ''}`;
@@ -158,8 +159,9 @@ async function run(ctx) {
       continue;
     }
     const st = items[e.id];
-    // 회차 확정이 안 된 항목은 매 실행 다시 찾고, 확정된 항목은 주기(상영 24시간 전부터 3분, 그전엔 5분)에 맞을 때만 조회한다.
-    if (e.show_id && !L.isDue(st, e, now)) continue;
+    // 회차 확정이 안 된 항목은 매 실행 다시 찾고, 확정된 항목은 주기(상영 24시간 안은 1분·CGV 2분, 그전엔 5분)에 맞을 때만 조회한다.
+    if (L.isNear(e, now)) nearChains.add(t.chain);
+    if (e.show_id && !L.isDue(st, e, now, t.chain)) continue;
 
     const sessions = await sessionsFor(t, e.date, e.movie);
     if (sessions === null) continue;
@@ -197,16 +199,9 @@ async function run(ctx) {
     items[e.id] = next;
   }
 
-  // ---- 실행 결과(연속 실패) 관리: 정상 응답이 하나도 없고 실패만 있었으면 실패 ----
-  const attempted = okCalls > 0 || failures.length > 0;
-  const failed = failures.length > 0 && okCalls === 0;
-  if (failed) log(`이번 실행은 실패로 집계: ${failures[failures.length - 1]} (조회 실패 ${failures.length}건)`);
-  else if (failures.length) log(`조회 실패 ${failures.length}건이 있었지만 정상 응답도 ${okCalls}건 받아 실패로 세지 않음`);
-  if (attempted) {
-    const { health, messages } = L.nextHealth(state._health, failed, failures[failures.length - 1] || '', now);
-    state._health = health;
-    for (const m of messages) await notify(m);
-  }
+  Object.assign(result, { okCalls, failures, near: nearChains.size > 0, nearNonCgv: [...nearChains].some(c => c !== 'CGV') });
+  // ---- 실행 결과(연속 실패) 관리: 정상 응답이 하나도 없고 실패만 있었으면 실패. 반복 확인(loop)에서는 실행이 끝날 때 한 번만 센다 ----
+  if (!ctx.skipHealth) await applyHealth(state, { okCalls, failures }, now, log, notify);
 
   // 목록에서 사라진 항목의 상태는 버린다.
   const ids = new Set(seats.map(x => x.id));
@@ -217,8 +212,51 @@ async function run(ctx) {
     if (result.changed) writeJson(paths.seats, seats);
     writeJson(paths.state, state);
   }
-  result.failed = failed;
+  result.failed = failures.length > 0 && okCalls === 0;
   return result;
+}
+
+async function applyHealth(state, agg, now, log, notify) {
+  const failed = agg.failures.length > 0 && agg.okCalls === 0;
+  if (failed) log(`이번 실행은 실패로 집계: ${agg.failures[agg.failures.length - 1]} (조회 실패 ${agg.failures.length}건)`);
+  else if (agg.failures.length) log(`조회 실패 ${agg.failures.length}건이 있었지만 정상 응답도 ${agg.okCalls}건 받아 실패로 세지 않음`);
+  if (agg.okCalls > 0 || agg.failures.length > 0) {
+    const { health, messages } = L.nextHealth(state._health, failed, agg.failures[agg.failures.length - 1] || '', now);
+    state._health = health;
+    for (const m of messages) await notify(m);
+  }
+}
+
+// 한 번의 실행 안에서 반복 확인한다: 상영 24시간 안인 회차가 있으면 1분(CGV만이면 2분) 간격으로 예산 안에서 반복, 없으면 한 번만 확인하고 끝낸다.
+// 호출은 5분마다(cron-job.org). 새 실행이 오면 이전 실행은 취소된다(concurrency).
+async function loop(ctx) {
+  const clock = ctx.clock || Date.now;
+  const pause = ctx.sleep || sleep;
+  const budget = ctx.budgetMs || 255 * 1000;
+  const t0 = clock();
+  const agg = { okCalls: 0, failures: [] };
+  const send = ctx.send;
+  let r, passes = 0;
+  for (;;) {
+    r = await run({ ...ctx, now: clock(), skipHealth: true });
+    passes++;
+    agg.okCalls += r.okCalls || 0;
+    agg.failures.push(...(r.failures || []));
+    if (ctx.dry || r.idle || !r.near) break;
+    const gap = r.nearNonCgv ? 60 * 1000 : 120 * 1000;
+    if (clock() - t0 + gap + 15 * 1000 > budget) break;
+    await pause(gap);
+  }
+  if (!r.idle) { // 목록이 비었으면 건드릴 것이 없다
+    const paths = { state: 'seat_state.json', ...(ctx.paths || {}) };
+    const state = readJson(paths.state, {});
+    const log = ctx.log || console.log;
+    const notify = async text => { log(`[디스코드] ${text.split('\n')[0]}`); if (!ctx.dry) { try { await send(text); } catch (e) { log(`  (디스코드 전송 실패: ${e.message})`); } } };
+    await applyHealth(state, agg, clock(), log, notify);
+    if (!ctx.dry && (agg.okCalls > 0 || agg.failures.length > 0)) writeJson(paths.state, state);
+  }
+  r.passes = passes;
+  return r;
 }
 
 if (require.main === module) {
@@ -227,9 +265,9 @@ if (require.main === module) {
     const r = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content.slice(0, 1900) }), signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error(`Discord HTTP ${r.status}`);
   };
-  run({ send, dry: process.env.DRY_RUN === 'true' })
-    .then(r => console.log(`완료: 알림 ${r.alerts}건, 회차 확정 ${r.confirmations}건, 만료 삭제 ${r.removed}건, 조회 ${r.fetched}건${r.changed ? ', 목록 변경됨' : ''}`))
+  loop({ send, dry: process.env.DRY_RUN === 'true' })
+    .then(r => console.log(`완료: 확인 ${r.passes}회, 알림 ${r.alerts}건, 회차 확정 ${r.confirmations}건, 만료 삭제 ${r.removed}건, 조회 ${r.fetched}건${r.changed ? ', 목록 변경됨' : ''}`))
     .catch(e => { console.error(e.stack || e.message); process.exit(1); });
 }
 
-module.exports = { run, makeFetchers };
+module.exports = { run, loop, makeFetchers };
