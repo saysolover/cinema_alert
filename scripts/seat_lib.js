@@ -43,14 +43,13 @@ function parseMegabox(j, theaterName, ymd) {
 
 function parseLotte(j) {
   if (!j || !j.PlaySeqs || !Array.isArray(j.PlaySeqs.Items)) throw new Error(`롯데 응답 형식 이상: ${(j && j.ResultMessage) || ''}`);
-  return j.PlaySeqs.Items.map(x => {
-    const total = num(x.TotalSeatCount), booked = num(x.BookingSeatCount);
-    return {
-      id: `${x.CinemaID}-${x.ScreenID}-${x.PlayDt}-${x.PlaySequence}`, title: x.MovieNameKR || '', date: x.PlayDt || '', time: hhmm(x.StartTime),
-      screen: x.ScreenNameKR || '', remain: total === null || booked === null ? null : total - booked, total,
-      link: 'https://www.lottecinema.co.kr/NLCHS/Ticketing',
-    };
-  });
+  // 주의: PlaySeqs의 BookingSeatCount는 "예매된 좌석"이 아니라 "예매 가능한(남은) 좌석 수"다.
+  // 신도림 트레인스포팅 20:10(매진): Total 32, BookingSeatCount 0 ↔ GetSeats는 예매된 좌석 32개(BookingSeats 32). 월드타워 치이카와 09:30: Total 124, BookingSeatCount 108 ↔ 예매된 좌석 16개.
+  return j.PlaySeqs.Items.map(x => ({
+    id: `${x.CinemaID}-${x.ScreenID}-${x.PlayDt}-${x.PlaySequence}`, title: x.MovieNameKR || '', date: x.PlayDt || '', time: hhmm(x.StartTime),
+    screen: x.ScreenNameKR || '', remain: num(x.BookingSeatCount), total: num(x.TotalSeatCount),
+    link: 'https://www.lottecinema.co.kr/NLCHS/Ticketing',
+  }));
 }
 
 function parseDtryx(res, cinemaCd, publicBase = 'https://www.dtryx.com') {

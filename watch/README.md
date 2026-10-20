@@ -27,7 +27,7 @@
 - 알림: 잔여석이 `min_seats` 미만 → 이상이 된 순간 1회 + 예매 링크. 같은 회차는 30분 안에 다시 알리지 않고, 내려갔다 올라오면 30분 뒤부터 재알림. 결제 대기 좌석이 풀린 것일 수 있어 바로 예매가 안 될 수 있다는 문구가 붙습니다.
 - 정리: `expires_at`이 지났거나 상영 시작 시각이 지난 항목은 지우고 목록을 커밋합니다.
 - 실패: 예매 감시와 같은 `_health` 규칙(연속 6·24회째 경고, 새벽 00~07시 KST는 4시간 뒤, 로그에 응답 `<title>`+앞 300자). 상태(마지막 잔여석·알림 시각·실패 횟수)는 actions cache의 `seat_state.json`.
-- 영화관별 잔여석: CGV `frSeatCnt`, 메가박스 `restSeatCnt`, 롯데 `TotalSeatCount - BookingSeatCount`, 디트릭스 `RemainSeatCnt`, 씨네Q 페이지의 `잔여 / 전체`(앞 숫자를 잔여로 읽음).
+- 영화관별 잔여석: CGV `frSeatCnt`, 메가박스 `restSeatCnt`, 롯데 `BookingSeatCount`(이름과 달리 "예매 가능한 남은 좌석 수"), 디트릭스 `RemainSeatCnt`, 씨네Q 페이지의 `잔여 / 전체`(앞 숫자를 잔여로 읽음).
 
 ## 호출 (cron-job.org)
 기존 예매 감시 잡을 복제해 URL만 바꿉니다: `POST https://api.github.com/repos/saysolover/cinema_alert/actions/workflows/seat-watch.yml/dispatches`, 본문 `{"ref":"main"}`, 주기 3분(CGV 하한).
