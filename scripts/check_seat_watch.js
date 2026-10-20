@@ -26,10 +26,10 @@ const { run } = require('./seat_watch');
   assert.throws(() => L.parseMegabox({ statCd: 1 }, '코엑스', '20261025'), /메가박스 응답 형식 이상/);
 
   const lotte = L.parseLotte({ PlaySeqs: { Items: [
-    { CinemaID: 1016, ScreenID: 1211, PlayDt: '2026-10-25', PlaySequence: 3, MovieNameKR: '트레인스포팅', StartTime: '19:30', TotalSeatCount: 8, BookingSeatCount: 8, ScreenNameKR: '11관' },
-    { CinemaID: 1016, ScreenID: 1212, PlayDt: '2026-10-25', PlaySequence: 1, MovieNameKR: '인턴', StartTime: '10:00', TotalSeatCount: 100, BookingSeatCount: 40, ScreenNameKR: '1관' },
+    { CinemaID: 1016, ScreenID: 1211, PlayDt: '2026-10-25', PlaySequence: 3, MovieNameKR: '트레인스포팅', StartTime: '19:30', TotalSeatCount: 8, BookingSeatCount: 0, ScreenNameKR: '11관' },
+    { CinemaID: 1016, ScreenID: 1212, PlayDt: '2026-10-25', PlaySequence: 1, MovieNameKR: '인턴', StartTime: '10:00', TotalSeatCount: 100, BookingSeatCount: 60, ScreenNameKR: '1관' },
   ] } });
-  assert.deepStrictEqual([lotte[0].id, lotte[0].remain, lotte[1].remain], ['1016-1211-2026-10-25-3', 0, 60], '롯데: 잔여 = 전체 - 예매');
+  assert.deepStrictEqual([lotte[0].id, lotte[0].remain, lotte[1].remain], ['1016-1211-2026-10-25-3', 0, 60], '롯데: BookingSeatCount가 곧 잔여(매진이면 0) — 실제 응답과 대조해 확정');
   assert.throws(() => L.parseLotte({ PlaySeqsHeader: { Items: [] } }), /롯데 응답 형식 이상/);
 
   const dt = L.parseDtryx({ Showseqlist: [{ MovieDetail: [
