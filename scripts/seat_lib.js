@@ -6,7 +6,8 @@ const KST_OFFSET = 9 * 60 * 60 * 1000;
 const DEDUP_MS = 30 * 60 * 1000; // 같은 회차 알림은 30분 안에 다시 보내지 않는다
 const NEAR_MS = 24 * 60 * 60 * 1000; // 상영 24시간 전부터 촘촘히 본다
 const EVERY_FAR_MS = 5 * 60 * 1000;
-const EVERY_NEAR_MS = 3 * 60 * 1000;
+const EVERY_NEAR_MS = 60 * 1000; // 상영 24시간 전부터 1분(한 번의 실행 안에서 반복 확인)
+const EVERY_NEAR_CGV_MS = 2 * 60 * 1000; // CGV는 Worker 경유라 2분
 const SLACK_MS = 30 * 1000; // 호출 시각 지터 여유
 
 const bodyHead = t => { const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(t) || [])[1]; return (title ? `[title: ${title.replace(/\s+/g, ' ').trim().slice(0, 80)}] ` : '') + t.slice(0, 300).replace(/\s+/g, ' '); };
@@ -125,8 +126,9 @@ function findSession(sessions, entry) {
 // ---- 시각·주기·만료 ----
 const startMs = entry => Date.parse(`${entry.date}T${hhmm(entry.time)}:00+09:00`);
 const isExpired = (entry, nowMs) => (entry.expires_at && Date.parse(entry.expires_at) < nowMs) || startMs(entry) < nowMs;
-const everyMs = (entry, nowMs) => (startMs(entry) - nowMs <= NEAR_MS ? EVERY_NEAR_MS : EVERY_FAR_MS);
-const isDue = (st, entry, nowMs) => !st || typeof st.checked_at !== 'number' || nowMs - st.checked_at >= everyMs(entry, nowMs) - SLACK_MS;
+const isNear = (entry, nowMs) => startMs(entry) - nowMs <= NEAR_MS;
+const everyMs = (entry, nowMs, chain) => (isNear(entry, nowMs) ? (chain === 'CGV' ? EVERY_NEAR_CGV_MS : EVERY_NEAR_MS) : EVERY_FAR_MS);
+const isDue = (st, entry, nowMs, chain) => !st || typeof st.checked_at !== 'number' || nowMs - st.checked_at >= everyMs(entry, nowMs, chain) - SLACK_MS;
 
 // ---- 0→N 판정 ----
 // 첫 관측은 기준선만 잡고 알리지 않는다. 기준 미만 → 이상이 된 순간 한 번, 30분 안 중복 없음.
@@ -142,7 +144,7 @@ function step(st, remain, min, nowMs) {
 }
 
 // ---- 연속 실패 규칙 (예매 감시 5종과 같다: 새벽 00~07시 KST에는 첫 경고를 4시간 늦춘다) ----
-const CRON_MIN = 3; // cron-job.org 호출 주기(분)
+const CRON_MIN = 5; // cron-job.org 호출 주기(분). 연속 실패는 실행 한 번을 한 번으로 센다(실행 안의 반복 확인은 합산)
 const ALERT_AT = [6, 24];
 const QUIET_END_HOUR = 7;
 const QUIET_ALERT_MIN = 240;
@@ -178,5 +180,5 @@ module.exports = {
   DEDUP_MS, bodyHead, norm, hhmm, isoDate, compactDate,
   parseCgv, parseMegabox, parseLotte, parseDtryx, parseCineq,
   parseTheaters, findTheater, movieMatches, findSession,
-  startMs, isExpired, everyMs, isDue, step, nextHealth, kstStr,
+  startMs, isExpired, isNear, everyMs, isDue, step, nextHealth, kstStr,
 };

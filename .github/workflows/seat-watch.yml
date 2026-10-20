@@ -1,7 +1,8 @@
 name: 취소표 감시
 
 # watch/seats.json에 등록된 회차의 잔여석이 기준 미만 → 이상으로 늘면 디스코드로 알린다(B7). 설명: watch/README.md
-# 호출: cron-job.org가 3분마다 workflow_dispatch(상영 24시간 전부터 3분, 그전엔 5분 — 스크립트가 회차별로 주기를 맞춘다).
+# 호출: cron-job.org가 5분마다 workflow_dispatch. 상영 24시간 안인 회차가 있으면 한 번의 실행 안에서 1분(CGV만이면 2분) 간격으로 반복 확인하고 끝낸다.
+# 새 실행이 오면 이전 실행은 취소된다(concurrency). 상태는 매 확인마다 파일에 쓰고, 취소돼도 캐시에 저장한다.
 # 아래 schedule은 cron-job.org가 멈췄을 때의 보험이다. 목록이 비어 있으면 요청 없이 바로 끝난다.
 on:
   schedule:
@@ -18,12 +19,12 @@ permissions:
 
 concurrency:
   group: seat-watch
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v5
         with:
@@ -61,13 +62,19 @@ jobs:
           DTRYX_RELAY_TOKEN: ${{ secrets.DTRYX_RELAY_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          before=$(sha256sum seat_state.json 2>/dev/null | cut -d' ' -f1)
+          echo "STATE_BEFORE=$(sha256sum seat_state.json 2>/dev/null | cut -d' ' -f1)" >> "$GITHUB_ENV"
           node scripts/seat_watch.js
+
+      # 취소(새 실행이 옴)나 실패로 위 단계가 끝까지 못 가도 바뀐 상태는 저장한다.
+      - name: Detect state change
+        id: after
+        if: always() && steps.pre.outputs.active == 'true'
+        run: |
           after=$(sha256sum seat_state.json 2>/dev/null | cut -d' ' -f1)
-          if [ "$before" != "$after" ]; then echo "state_changed=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "$STATE_BEFORE" != "$after" ]; then echo "state_changed=true" >> "$GITHUB_OUTPUT"; fi
 
       - name: Save seat state
-        if: always() && steps.watch.outputs.state_changed == 'true'
+        if: always() && steps.after.outputs.state_changed == 'true'
         uses: actions/cache/save@v5
         with:
           path: seat_state.json
