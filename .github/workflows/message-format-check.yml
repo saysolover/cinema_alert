@@ -12,6 +12,8 @@ on:
       - 'scripts/seat_lib.js'
       - 'scripts/seat_watch.js'
       - 'scripts/check_seat_watch.js'
+      - 'scripts/schedule_sync.js'
+      - 'scripts/check_schedule_sync.js'
       - '.github/workflows/seat-watch.yml'
 
 jobs:
@@ -25,3 +27,4 @@ jobs:
           node-version: '20'
       - run: node scripts/check_message_format.js
       - run: node scripts/check_seat_watch.js
+      - run: node scripts/check_schedule_sync.js
