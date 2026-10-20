@@ -75,6 +75,68 @@ const markCases = [
 for (const [names, want] of markCases) assert.strictEqual(specialMarks(names, T).join('·'), want, JSON.stringify(names));
 assert.strictEqual(specialMarks(['[a] x', '[b]', '[c]', '[d]', '[e]', '[f]', '[g]'], ['x']).length, 5, '최대 5개');
 console.log('OK: 두 워크플로의 buildMessage가 같고, 5개 워크플로의 specialMarks도 같으며, 같은 입력에 같은 형식을 낸다.');
+// ---- 연속 실패 경고: 낮에는 기존 임계, 새벽(00~07 KST)에는 늦추고 07시에 바로 알림 ----
+const CRON = { cgv: 10, lotte: 3, megabox: 3, dtryx: 5, cineq: 5 };
+const healthSrc = chain => {
+  const text = fs.readFileSync(`.github/workflows/${chain}-booking-watch.yml`, 'utf8').replace(/\r\n/g, '\n');
+  const m = text.match(/^ {10}const (?:HEALTH_FILE|ALERT_AT)[\s\S]*?\n {10}function nextHealth[\s\S]*?\n {10}\}\n/m);
+  assert(m, `${chain}: nextHealth를 찾지 못함`);
+  return m[0].split('\n').map(l => l.slice(10)).join('\n');
+};
+const kstMs = (day, h, min = 0) => Date.UTC(2026, 9, day, h - 9, min); // KST day일 h시 min분
+for (const chain of CHAINS) {
+  const s = healthSrc(chain);
+  const prelude = (chain === 'cgv' || chain === 'lotte' || chain === 'megabox' ? '' : "const HEALTH_LABEL = 'x';\n") + 'const KST_OFFSET = 9 * 60 * 60 * 1000;\n';
+  const api = new Function(`${prelude}${s}\nreturn { nextHealth, ALERT_AT, CRON_MIN, QUIET_ALERT_MIN };`)();
+  const failArg = chain === 'dtryx' || chain === 'cineq' ? 'transient' : true;
+  const okArg = chain === 'dtryx' || chain === 'cineq' ? null : false;
+  const cron = api.CRON_MIN, [a1, a2] = api.ALERT_AT;
+  assert.strictEqual(cron, CRON[chain], `${chain}: CRON_MIN`);
+  assert.strictEqual(api.QUIET_ALERT_MIN, 240, `${chain}: QUIET_ALERT_MIN`);
+  // 한 시각 t에 실패가 N회 이어질 때 알림이 나간 n 목록 (분 단위로 시각을 진행)
+  const run = (startMs, count) => {
+    let h, sent = [];
+    for (let i = 0; i < count; i++) {
+      const r = api.nextHealth(h, failArg, 'HTTP 200: <html>', startMs + i * cron * 60000);
+      h = r.health;
+      if (r.messages.length) sent.push([h.consecutive_failures, r.messages.length]);
+    }
+    return { sent, health: h };
+  };
+  // 낮(12시): 기존대로 a1회와 a2회째
+  const day = run(kstMs(19, 12), a2 + 3);
+  assert.deepStrictEqual(day.sent.map(x => x[0]), [a1, a2], `${chain}: 낮 경고 시점`);
+  // 새벽(00:00 시작, 240분 안에 끝나는 구간): 7시 전에는 4시간이 차기 전까지 조용
+  const need = Math.ceil(240 / cron);
+  const night = run(kstMs(20, 0), need - 1);
+  assert.deepStrictEqual(night.sent, [], `${chain}: 새벽 ${need - 1}회까지는 경고 없음`);
+  const night2 = run(kstMs(20, 0), need);
+  assert.deepStrictEqual(night2.sent.map(x => x[0]), [need], `${chain}: 새벽 4시간째에 한 번만(두 단계가 겹쳐도 한 통)`);
+  // 새벽 중 시작해 07시에도 실패 중이면 그때 바로(첫 정시 이후 첫 실행)
+  const before7 = run(kstMs(20, 5), Math.floor(120 / cron)); // 05:00~07:00 직전, 4시간 미만
+  assert.deepStrictEqual(before7.sent, [], `${chain}: 07시 전엔 조용`);
+  const r7 = api.nextHealth(before7.health, failArg, 'x', kstMs(20, 7, 0));
+  assert.strictEqual(r7.messages.length, 1, `${chain}: 07시에 바로 경고`);
+  // 복구: 경고가 나갔던 경우에만 복구 알림
+  const rec = api.nextHealth(r7.health, okArg, '', kstMs(20, 7, 30));
+  assert.strictEqual(rec.messages.length, 1, `${chain}: 복구 알림`);
+  const quietRec = api.nextHealth(run(kstMs(20, 0), 2).health, okArg, '', kstMs(20, 1));
+  assert.strictEqual(quietRec.messages.length, 0, `${chain}: 경고 없이 끝난 새벽 장애는 복구 알림도 없음`);
+}
+// 비JSON 응답 로그: <title>과 앞 300자
+{
+  const t = fs.readFileSync('.github/workflows/cgv-booking-watch.yml', 'utf8').replace(/\r\n/g, '\n');
+  const m = t.match(/^ {10}const bodyHead = .*$/m);
+  assert(m, 'bodyHead를 찾지 못함');
+  const heads = CHAINS.map(c => fs.readFileSync(`.github/workflows/${c}-booking-watch.yml`, 'utf8').replace(/\r\n/g, '\n').match(/^ {10}const bodyHead = .*$/m)[0]);
+  heads.forEach((x, i) => assert.strictEqual(x, heads[0], `bodyHead가 ${CHAINS[i]}에서 다름`));
+  const bodyHead = new Function(`${m[0].trim()}\nreturn bodyHead;`)();
+  const out = bodyHead('<!DOCTYPE html><html><head><title> 시스템  점검 중 </title></head><body>' + 'x'.repeat(500));
+  assert(out.startsWith('[title: 시스템 점검 중] <!DOCTYPE html>'), out.slice(0, 60));
+  assert(out.length <= 80 + 20 + 300);
+  assert.strictEqual(bodyHead('plain\ntext'), 'plain text');
+}
+console.log('OK: 연속 실패 경고(낮/새벽/07시/복구)와 bodyHead가 5개 워크플로에서 같다.');
 if (process.argv.includes('--show')) {
   const ev = cases.mixed;
   console.log('--- 디트릭스 ---\n' + build.dtryx('트레인스포팅', '디트릭스', '아트하우스모모', ev, ev.map(e => ({ date: e.date, url: `https://www.dtryx.com/reserve/movie.do?BrandCd=indieart&CinemaCd=000067&MovieCd=029763&PlaySDT=${e.date}` }))));

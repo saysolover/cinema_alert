@@ -156,6 +156,9 @@ jobs:
           // cron 간격(5분) 안에 끝내기 위한 실행 시간 상한. 넘으면 재시도를 멈추고, 다음 조회부터는 실행을 실패로 끝낸다.
           const DEADLINE = Date.now() + 4 * 60 * 1000;
 
+          // 비JSON·오류 응답은 <title>과 앞 300자를 로그에 남긴다(점검 페이지와 차단 페이지를 구분하기 위함).
+          const bodyHead = t => { const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(t) || [])[1]; return (title ? `[title: ${title.replace(/\s+/g, ' ').trim().slice(0, 80)}] ` : '') + t.slice(0, 300).replace(/\s+/g, ' '); };
+
           async function fetchWithRetry(url, options, attempts = 3, idempotent = !options || !options.method || options.method === 'GET') {
             let lastErr;
             for (let i = 0; i < attempts; i++) {
@@ -163,7 +166,7 @@ jobs:
               try {
                 const r = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
                 if (r.status >= 500) {
-                  const head = (await r.clone().text().catch(() => '')).slice(0, 100).replace(/\s+/g, ' ');
+                  const head = bodyHead(await r.clone().text().catch(() => ''));
                   console.log(`  (HTTP ${r.status}: ${head})`);
                 }
                 if (last || !(idempotent && RETRY_STATUS.has(r.status))) return r;
@@ -202,8 +205,8 @@ jobs:
               const html = await r.text();
               // 정상 응답에는 항상 "관람료 안내" 버튼이 있다. 없으면 오류 페이지 등이므로 0회로 세지 않는다.
               if (!html.includes('priceTableBtn')) {
-                console.log(`  (응답 형식이 달라 스킵: ${html.length}자, 앞부분=${JSON.stringify(html.slice(0, 120))})`);
-                failures.push('응답 형식이 달라짐');
+                console.log(`  (응답 형식이 달라 스킵: ${html.length}자, 앞부분=${JSON.stringify(bodyHead(html))})`);
+                failures.push(`응답 형식이 달라짐: ${bodyHead(html)}`);
                 return null;
               }
               return html;
@@ -309,7 +312,11 @@ jobs:
           // 회복하면 한 번 알린다. 접속 차단(ConfigError)은 첫 회에 알리고 워크플로도 실패로 끝낸다.
           // 연속 실패 상태는 cineq_state.json의 "_health" 키에 저장한다(기존 상태 커밋 방식 그대로).
           const ALERT_AT = [6, 24];
+          const CRON_MIN = 5; // 호출 주기(분)
+          const QUIET_END_HOUR = 7; // 새벽(00:00~07:00 KST)에는 첫 경고를 늦춘다. 감시는 그대로 돌고, 07시에도 실패 중이면 그때 바로 알린다
+          const QUIET_ALERT_MIN = 240; // 새벽에는 연속 실패가 이만큼(분, ≈4시간) 이어져야 경고 — 상수는 이 한 곳
           const kst = ms => new Date(ms + KST_OFFSET).toISOString().replace('T', ' ').slice(0, 16) + ' KST';
+          const kstHour = ms => new Date(ms + 9 * 60 * 60 * 1000).getUTCHours();
 
           // prev: 저장된 _health. kind: null(성공) | 'transient' | 'config'. 반환: { health, messages }
           function nextHealth(prev, kind, errText, nowMs) {
@@ -327,16 +334,21 @@ jobs:
             const since = `첫 실패: ${kst(Date.parse(first))}`;
             const last = `마지막 오류: ${errText.slice(0, 200)}`;
             let alerted = !!p.alerted;
+            const quiet = kstHour(nowMs) < QUIET_END_HOUR;
+            const due = ALERT_AT.filter(t => n >= t && (!quiet || n * CRON_MIN >= QUIET_ALERT_MIN)).length; // 지금 알려야 할 단계 수
+            const stage = p.alert_stage ?? (p.alerted ? 1 : 0); // 이미 알린 단계
+            let newStage = stage;
             if (kind === 'config') {
               if (p.last_kind !== 'config') {
                 messages.push(`🚫 씨네Q 감시 접속 오류 — 바로 확인이 필요합니다\n${last}\n${process.env.RUN_URL || ''}`.trim());
                 alerted = true;
               }
-            } else if (ALERT_AT.includes(n)) {
-              messages.push(`⚠️ 씨네Q 감시 연속 실패 ${n}회 (약 ${n * 5}분)\n${since}\n${last}` + (n === 6 ? '\n(계속되면 24회째에 한 번 더 알립니다)' : ''));
+            } else if (due > stage) {
+              messages.push(`⚠️ 씨네Q 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n${since}\n${last}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
               alerted = true;
             }
-            return { health: { consecutive_failures: n, first_failure_at: first, last_kind: kind, last_error: errText.slice(0, 200), alerted }, messages };
+            if (kind !== 'config' && due > stage) newStage = due;
+            return { health: { consecutive_failures: n, first_failure_at: first, last_kind: kind, last_error: errText.slice(0, 200), alerted, alert_stage: newStage }, messages };
           }
 
           async function run() {
