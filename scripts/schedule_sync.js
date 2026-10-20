@@ -6,7 +6,7 @@ const L = require('./seat_lib');
 const { makeFetchers } = require('./seat_watch');
 
 const DAYS = 7;
-const REFRESH_MS = 6 * 60 * 60 * 1000; // 구조가 안 바뀌어도 잔여석 갱신을 위해 이 간격으로는 다시 쓴다(하루 최대 4번)
+const REFRESH_MS = 30 * 60 * 1000; // 구조가 안 바뀌어도 잔여석 갱신을 위해 이 간격이 지나면 다시 쓴다(매시간 실행이면 매번). 파일은 이력 없는 watch-data 브랜치로만 가므로 커밋 부담이 없다
 const readJson = (f, d) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : d);
 const readLines = f => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : []);
 
