@@ -46,6 +46,10 @@
     }
   },
   "_health": {
-    "consecutive_failures": 0
+    "consecutive_failures": 1,
+    "first_failure_at": "2026-10-22T13:41:45.807Z",
+    "last_error": "실행 시간 상한(4분) 초과 — 응답 지연으로 중단",
+    "alerted": false,
+    "alert_stage": 0
   }
 }
