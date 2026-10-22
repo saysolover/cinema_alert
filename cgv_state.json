@@ -35,11 +35,7 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-10-22T15:21:10.807Z",
-    "last_error": "CGV 요청 실패: 비JSON 응답 HTTP 502: upstream error: TimeoutError",
-    "alerted": false,
-    "alert_stage": 0
+    "consecutive_failures": 0
   },
   "트레인스포팅|용산": {
     "since": "2026-10-22",
