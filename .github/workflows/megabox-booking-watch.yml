@@ -348,6 +348,7 @@ jobs:
               const counts = {}; // counts[극장이름][YYYY-MM-DD] = 일반 회차 수 (조회 성공한 날짜만, 0 포함)
               const samples = {}; // 알림 근거 확인용 로그
               const tagsBy = {};  // tagsBy[극장이름] = 센 회차들의 이름 모음(표시 추출용)
+              const titleBy = {}; // titleBy[극장이름] = 알림에 보일 실제 영화명(없으면 키워드)
               for (const areaCd of new Set(pending.map(t => t.areaCd))) {
                 const targets = pending.filter(t => t.areaCd === areaCd);
                 for (const playDe of dates) {
@@ -368,6 +369,7 @@ jobs:
                       [it.movieNo, it.rpstMovieNo].includes(movieNo) &&
                       it.bokdAbleAt === 'Y' && it.brchBokdUnableAt !== 'Y');
                     for (const it of hits) for (const n of namesOf(it)) (tagsBy[theater.name] = tagsBy[theater.name] || new Set()).add(n);
+                    if (!titleBy[theater.name] && hits.length > 0) titleBy[theater.name] = hits[0].rpstMovieNm || hits[0].movieNm || null;
                     (counts[theater.name] = counts[theater.name] || {})[fmtDate(playDe)] = hits.length;
                     if (hits.length > 0) (samples[theater.name] = samples[theater.name] || {})[fmtDate(playDe)] = hits.slice(0, 3).map(it => `${it.brchNm} ${it.playStartTime} ${it.movieNm}(${it.movieNo}/${it.rpstMovieNo}) bokd=${it.bokdAbleAt}`);
                   }
@@ -384,7 +386,7 @@ jobs:
                   for (const e of events) console.log(`  근거 ${e.date}: ${JSON.stringify((samples[theater.name] || {})[e.date])}`);
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(keyword, '메가박스', theater.name, events, specialMarks([...(tagsBy[theater.name] || [])], [keyword])) })
+                    body: JSON.stringify({ content: buildMessage(titleBy[theater.name] || keyword, '메가박스', theater.name, events, specialMarks([...(tagsBy[theater.name] || [])], [keyword])) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
