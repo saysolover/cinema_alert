@@ -60,7 +60,9 @@ srcs.forEach((x, i) => assert.strictEqual(x, srcs[0], `specialMarks 소스가 ${
 const specialMarks = new Function(`${srcs[0]}\nreturn specialMarks;`)();
 const T = ['트레인스포팅'];
 const markCases = [
-  [['[F] 트레인스포팅'], 'F'],
+  [['[F] 트레인스포팅'], ''],                                   // 메가박스 자체 접두 코드 [F]는 특별 상영이 아니다
+  [['[메가토크] 트레인스포팅'], '메가토크'],
+  [['[F] 트레인스포팅', '일반콘텐트'], ''],
   [['[프리미어] 트레인스포팅', '프리미어'], '프리미어'],        // 메가박스 코엑스 실제 사례(이름 + 구분 필드)
   [['트레인스포팅(프리미어DAY)'], '프리미어DAY'],               // CGV 오리 실제 사례
   [['트레인스포팅 (GV)'], 'GV'],
@@ -70,10 +72,16 @@ const markCases = [
   [['트레인스포팅(4DX 2D)', '트레인스포팅(IMAX LASER 2D)', '트레인스포팅 [4DX]', '트레인스포팅(자막)'], ''], // 포맷은 특별 상영이 아니다
   [['호프(SCREENX DOLBY ATMOS mix 2D, 해술이 아저씨가 말한 특가)'], ''],
   [['트레인스포팅', ''], ''],
-  [['Ｔｒａｉｎｓｐｏｔｔｉｎｇ ［Ｆ］'], 'F'],                 // NFKC
+  [['Ｔｒａｉｎｓｐｏｔｔｉｎｇ ［ＧＶ］'], 'GV'],                // NFKC
 ];
 for (const [names, want] of markCases) assert.strictEqual(specialMarks(names, T).join('·'), want, JSON.stringify(names));
-assert.strictEqual(specialMarks(['[a] x', '[b]', '[c]', '[d]', '[e]', '[f]', '[g]'], ['x']).length, 5, '최대 5개');
+assert.strictEqual(specialMarks(['[GV] x', '[시사회]', '[무대인사]', '[라이브]', '[커튼콜]', '[상영회]', '[팬미팅]'], ['x']).length, 5, '최대 5개');
+// 표기는 알림 날짜(events)에서 센 회차 이름만 쓴다: 5개 워크플로 모두 날짜별로 모으고 events 날짜만 꺼낸다.
+for (const chain of CHAINS) {
+  const text = fs.readFileSync(`.github/workflows/${chain}-booking-watch.yml`, 'utf8');
+  assert(/events\.flatMap\(e => \[\.\.\.\(.*\[e\.date\]/.test(text), `${chain}: specialMarks 입력이 알림 날짜(events)로 한정되지 않음`);
+  assert(!/specialMarks\(\[\.\.\./.test(text), `${chain}: 전체 날짜의 이름을 specialMarks에 넘김`);
+}
 console.log('OK: 두 워크플로의 buildMessage가 같고, 5개 워크플로의 specialMarks도 같으며, 같은 입력에 같은 형식을 낸다.');
 // ---- 연속 실패 경고: 낮에는 기존 임계, 새벽(00~07 KST)에는 늦추고 07시에 바로 알림 ----
 const CRON = { cgv: 10, lotte: 3, megabox: 3, dtryx: 5, cineq: 5 };

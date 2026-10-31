@@ -115,7 +115,7 @@ jobs:
           // 이 함수는 5개 영화사 워크플로에 같은 글자로 들어 있다(scripts/check_message_format.js가 같은지 확인한다).
           function specialMarks(names, titles = []) {
             const clean = s => String(s || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
-            const KNOWN = /프리미어(?: ?DAY)?|PREMIERE|GV|무대인사|시네마톡|아트그라피|스페셜|시사회?|관객과의 ?대화|커튼콜|라이브|특별 ?상영|팬 ?미팅|상영회|오케스트라/i;
+            const KNOWN = /프리미어(?: ?DAY)?|PREMIERE|GV|무대인사|시네마톡|아트그라피|스페셜|시사회?|관객과의 ?대화|커튼콜|라이브|특별 ?상영|팬 ?미팅|상영회|오케스트라|메가토크/i;
             const FORMAT = /^(?:[234]D|4DX|IMAX|SCREENX|DOLBY|ATMOS|LASER|MX4D|ULTRA|SUITE|MIX|ONLY|자막|더빙|[\s,+&·/-])+$/i;
             const marks = [];
             const add = m => {
@@ -128,7 +128,7 @@ jobs:
               let s = clean(raw);
               for (const t of ts) s = s.replace(new RegExp(esc(t), 'ig'), ' ');
               s = clean(s);
-              s = s.replace(/\[([^\]]*)\]/g, (_, g) => { add(g); return ' '; });
+              s = s.replace(/\[([^\]]*)\]/g, (_, g) => { if (KNOWN.test(g)) add(g); return ' '; });
               s = s.replace(/\(([^)]*)\)/g, (_, g) => { if (KNOWN.test(g)) add(g); return ' '; });
               for (const m of s.match(new RegExp(KNOWN.source, 'ig')) || []) add(m);
             }
@@ -210,7 +210,9 @@ jobs:
               for (const [siteName, siteNo] of Object.entries(SITES)) {
                 const stateKey = `${keyword}|${siteName}`;
                 const entry = state[stateKey];
-                const tags = new Set();
+                // 알림에 보일 표기는 이번 알림의 날짜(events)에서 센 회차 이름만 모은다(다른 날짜의 GV·메가토크가 섞이지 않게).
+                const tagsByDate = {};
+                const addTag = (d, n) => (tagsByDate[d] = tagsByDate[d] || new Set()).add(n);
                 if (!shouldCheck(entry, today, followUpRun)) continue;
 
                 const days = await getJson(`${BASE}/api/v1/booking/searchSiteScnscYmdListByMov?coCd=A420&movNo=${movie.movNo}&siteNo=${siteNo}`);
@@ -225,7 +227,7 @@ jobs:
                   if (list === null) { failed.add(fmtDate(d.scnYmd)); continue; }
                   const mine = list.filter(x => x.movNo === movie.movNo || (x.prodNm || '').includes(keyword));
                   cur[fmtDate(d.scnYmd)] = mine.length;
-                  for (const x of mine) if (x.prodNm) tags.add(x.prodNm);
+                  for (const x of mine) if (x.prodNm) addTag(fmtDate(d.scnYmd), x.prodNm);
                 }
                 // 상영일 목록에서 빠진 날짜(이전에 열려 있었음)는 닫힌 것으로 본다. 단, 이번에 조회 실패한 날짜는 제외.
                 for (const d of Object.keys((entry && entry.dates) || {})) if (!(d in cur) && !failed.has(d) && d >= today) cur[d] = 0;
@@ -236,7 +238,7 @@ jobs:
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(movie.movNm.trim(), 'CGV', siteName, events, specialMarks([...tags], [keyword, movie.movNm])) })
+                    body: JSON.stringify({ content: buildMessage(movie.movNm.trim(), 'CGV', siteName, events, specialMarks(events.flatMap(e => [...(tagsByDate[e.date] || [])]), [keyword, movie.movNm])) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
