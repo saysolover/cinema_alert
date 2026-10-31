@@ -368,6 +368,7 @@ jobs:
 
                 const cur = {};
                 const tags = new Set();
+                let title = null; // 알림에 보일 실제 영화명(없으면 키워드)
                 for (const playDate of dates) {
                   const items = await getPlaySequence(theater.cinemaID, movieCd, playDate);
                   if (items === null) continue;
@@ -375,6 +376,7 @@ jobs:
                   const mine = items.filter(it => String(it.RepresentationMovieCode) === String(movieCd));
                   cur[playDate] = mine.length;
                   for (const it of mine) for (const n of namesOf(it)) tags.add(n);
+                  if (!title) title = (mine.find(it => it.MovieNameKR) || {}).MovieNameKR || null;
                 }
 
                 const { events, next } = evaluate(entry, cur, today);
@@ -382,7 +384,7 @@ jobs:
                   console.log(`"${keyword}" @ 롯데시네마 ${theater.name}: ${events.map(e => `${e.kind} ${e.date}`).join(', ')}`);
                   const res = await fetch(process.env.DISCORD_WEBHOOK, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: buildMessage(keyword, '롯데시네마', theater.name, events, specialMarks([...tags], [keyword])) })
+                    body: JSON.stringify({ content: buildMessage(title || keyword, '롯데시네마', theater.name, events, specialMarks([...tags], [keyword])) })
                   });
                   console.log('Discord 응답 상태:', res.status);
                 } else {
