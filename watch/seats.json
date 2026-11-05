@@ -1,15 +1,15 @@
 [
- {
-  "id": "m1",
-  "theater": "CGV 용산",
-  "theater_key": "CGV,용산,0013",
-  "movie": "듄",
-  "date": "2026-11-11",
-  "time": "08:00",
-  "min_seats": 1,
-  "show_id": null,
-  "created_at": "2026-11-05T23:55:57+09:00",
-  "expires_at": "2026-11-11T08:00:00+09:00",
-  "note": ""
- }
+  {
+    "id": "m1",
+    "theater": "CGV 용산",
+    "theater_key": "CGV,용산,0013",
+    "movie": "듄",
+    "date": "2026-11-11",
+    "time": "08:00",
+    "min_seats": 1,
+    "show_id": "0013-20261111-018-1",
+    "created_at": "2026-11-05T23:55:57+09:00",
+    "expires_at": "2026-11-11T08:00:00+09:00",
+    "note": ""
+  }
 ]
