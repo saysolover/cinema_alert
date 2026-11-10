@@ -100,7 +100,7 @@ function makeFetchers(env, fetchFn, deadline) {
 // ---- 메시지 ----
 const where = (e, s) => `${e.theater} · ${s ? s.title || e.movie : e.movie} · ${dayLabel(e.date)} ${e.time}${s && s.screen ? ` ${s.screen}` : ''}`;
 const msgConfirm = (e, s) => `✅ [등록됨] 알림이 아니라 감시 등록 확인입니다.\n${where(e, s)} · 지금 잔여 ${s.remain}석\n` +
-  (s.remain >= e.min_seats ? `이미 기준(${e.min_seats}석) 이상이라 지금은 알림이 없습니다. 기준 미만으로 줄었다가 다시 ${e.min_seats}석 이상 생기면 [취소표] 알림이 옵니다.`
+  (s.remain >= e.min_seats ? `이미 기준(${e.min_seats}석) 이상이라 지금은 알림이 없습니다. 지금보다 좌석이 늘면 [취소표] 알림이 옵니다.`
     : `${e.min_seats}석 이상으로 늘어나는 순간 [취소표] 알림이 옵니다.`) + `\n[예매 페이지](<${s.link}>)`;
 const msgAlert = (e, s, prev) => `🎟 [취소표] 알림! ${where(e, s)}\n잔여 ${prev}석 → ${s.remain}석 (기준 ${e.min_seats}석 이상)\n[예매하기](<${s.link}>)\n※ 결제 대기 좌석이 풀린 것일 수 있어 바로 예매가 안 될 수 있습니다.${e.note ? `\n메모: ${e.note}` : ''}`;
 const msgNotFound = (e, r, kind) =>

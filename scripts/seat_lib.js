@@ -130,15 +130,20 @@ const isNear = (entry, nowMs) => startMs(entry) - nowMs <= NEAR_MS;
 const everyMs = (entry, nowMs, chain) => (isNear(entry, nowMs) ? (chain === 'CGV' ? EVERY_NEAR_CGV_MS : EVERY_NEAR_MS) : EVERY_FAR_MS);
 const isDue = (st, entry, nowMs, chain) => !st || typeof st.checked_at !== 'number' || nowMs - st.checked_at >= everyMs(entry, nowMs, chain) - SLACK_MS;
 
-// ---- 0→N 판정 ----
-// 첫 관측은 기준선만 잡고 알리지 않는다. 기준 미만 → 이상이 된 순간 한 번, 30분 안 중복 없음.
+// ---- 증가 판정 ----
+// 첫 관측은 기준선만 잡는다. low = 지금까지 본 최저 잔여석. 잔여가 기준 이상이고 low보다 커지면 한 번 알리고,
+// 잔여가 다시 low 이하로 내려갈 때까지 재알림 없음(armed). 30분 안 중복 없음.
 function step(st, remain, min, nowMs) {
   const prev = st && typeof st.last === 'number' ? st.last : null;
+  const low = st && typeof st.low === 'number' ? st.low : prev;
   const next = { ...(st || {}), last: remain, checked_at: nowMs };
   let alert = false;
-  if (prev !== null && prev < min && remain >= min && !(st.alerted_at && nowMs - st.alerted_at < DEDUP_MS)) {
-    alert = true;
-    next.alerted_at = nowMs;
+  if (prev === null || remain <= low) { next.low = remain; next.armed = true; }
+  else {
+    next.low = low;
+    if (st.armed !== false && remain >= min && !(st.alerted_at && nowMs - st.alerted_at < DEDUP_MS)) {
+      alert = true; next.alerted_at = nowMs; next.armed = false;
+    }
   }
   return { next, alert, prev };
 }
