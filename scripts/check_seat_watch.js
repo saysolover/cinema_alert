@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 const L = require('./seat_lib');
 const { run, loop } = require('./seat_watch');
+// 시험 시각(2026-10)은 실제 시계와 달라 "4분 마감"이 항상 지난 것으로 보이므로 마감을 충분히 늘린다.
+const DEADLINE_EXTRA = 10 * 365 * 24 * 3600 * 1000;
 
 // ---- 1. 영화관별 파서 5종 (실제 응답 모양을 줄인 샘플) ----
 {
@@ -145,7 +147,7 @@ const { run, loop } = require('./seat_watch');
     return { ok: true, status: 200, text: async () => JSON.stringify({ statusCode: 0, data }) };
   };
   const sent = [];
-  const go = (min, over = {}) => run({ env: { SEAT_TEST: '1' }, now: T0 + min * 60000, paths, fetchFn, send: async t => sent.push(t), ...over });
+  const go = (min, over = {}) => run({ env: { SEAT_TEST: '1' }, deadlineExtra: DEADLINE_EXTRA, now: T0 + min * 60000, paths, fetchFn, send: async t => sent.push(t), ...over });
 
   // 목록이 비면 요청 없이 끝난다
   write([]);
@@ -157,7 +159,7 @@ const { run, loop } = require('./seat_watch');
   remain = 0;
   r = await go(0);
   assert.strictEqual(read()[0].show_id, '0013-20261025-003-2');
-  assert(sent[0].startsWith('✅ CGV 용산 · 트레인스포팅 · 10/25(일) 19:30 3관 · 지금 잔여 0석 · 2석 이상 풀리면 알림'), sent[0]);
+  assert(sent[0].startsWith('✅ [등록됨] 알림이 아니라 감시 등록 확인입니다.\nCGV 용산 · 트레인스포팅 · 10/25(일) 19:30 3관 · 지금 잔여 0석\n2석 이상으로 늘어나는 순간 [취소표] 알림이 옵니다.'), sent[0]);
   assert.strictEqual(r.confirmations, 1);
 
   // 5분 안에는 다시 조회하지 않는다(먼 회차는 5분 주기)
@@ -170,7 +172,7 @@ const { run, loop } = require('./seat_watch');
   assert.strictEqual(sent.length, 1);
   remain = 3; await go(10);
   assert.strictEqual(sent.length, 2);
-  assert(sent[1].includes('🎟 취소표 알림!') && sent[1].includes('잔여 1석 → 3석') && sent[1].includes('결제 대기') && sent[1].includes('[예매하기](<'), sent[1]);
+  assert(sent[1].includes('🎟 [취소표] 알림!') && sent[1].includes('잔여 1석 → 3석') && sent[1].includes('결제 대기') && sent[1].includes('[예매하기](<'), sent[1]);
   // 계속 높으면 재알림 없음, 내려갔다가 30분 안에 올라오면 없음, 30분 뒤엔 있음
   remain = 3; await go(15);
   remain = 0; await go(20);
@@ -217,7 +219,7 @@ const { run, loop } = require('./seat_watch');
   {
     const T1 = Date.UTC(2026, 9, 25, 5, 0); // 10/25 14:00 KST → 19:30 회차는 5.5시간 뒤(24시간 안)
     const mk = () => { let t = T1; const naps = []; return { clock: () => t, sleep: async ms => { naps.push(ms); t += ms; }, naps }; };
-    const loopGo = (c, over = {}) => loop({ env: { SEAT_TEST: '1' }, paths, fetchFn, send: async t => sent.push(t), log: () => {}, clock: c.clock, sleep: c.sleep, ...over });
+    const loopGo = (c, over = {}) => loop({ env: { SEAT_TEST: '1' }, deadlineExtra: DEADLINE_EXTRA, paths, fetchFn, send: async t => sent.push(t), log: () => {}, clock: c.clock, sleep: c.sleep, ...over });
     write([entry({ id: 'L1', show_id: '0013-20261025-003-2', expires_at: '2026-10-26T00:00:00Z' })]);
     fs.writeFileSync(paths.state, '{}');
     mode = 'ok'; remain = 0; sent.length = 0;

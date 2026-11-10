@@ -105,5 +105,5 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sS -H 'Content-Type: application/json' \
-            -d "{\"content\":\"⚠️ 취소표 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            -d "{\"content\":\"⚠️ [오류] 취소표 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
             "$DISCORD_WEBHOOK" || true
