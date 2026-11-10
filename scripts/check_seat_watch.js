@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 const L = require('./seat_lib');
 const { run, loop } = require('./seat_watch');
+// 시험 시각(2026-10)은 실제 시계와 달라 "4분 마감"이 항상 지난 것으로 보이므로 마감을 충분히 늘린다.
+const DEADLINE_EXTRA = 10 * 365 * 24 * 3600 * 1000;
 
 // ---- 1. 영화관별 파서 5종 (실제 응답 모양을 줄인 샘플) ----
 {
@@ -145,7 +147,7 @@ const { run, loop } = require('./seat_watch');
     return { ok: true, status: 200, text: async () => JSON.stringify({ statusCode: 0, data }) };
   };
   const sent = [];
-  const go = (min, over = {}) => run({ env: { SEAT_TEST: '1' }, now: T0 + min * 60000, paths, fetchFn, send: async t => sent.push(t), ...over });
+  const go = (min, over = {}) => run({ env: { SEAT_TEST: '1' }, deadlineExtra: DEADLINE_EXTRA, now: T0 + min * 60000, paths, fetchFn, send: async t => sent.push(t), ...over });
 
   // 목록이 비면 요청 없이 끝난다
   write([]);
@@ -217,7 +219,7 @@ const { run, loop } = require('./seat_watch');
   {
     const T1 = Date.UTC(2026, 9, 25, 5, 0); // 10/25 14:00 KST → 19:30 회차는 5.5시간 뒤(24시간 안)
     const mk = () => { let t = T1; const naps = []; return { clock: () => t, sleep: async ms => { naps.push(ms); t += ms; }, naps }; };
-    const loopGo = (c, over = {}) => loop({ env: { SEAT_TEST: '1' }, paths, fetchFn, send: async t => sent.push(t), log: () => {}, clock: c.clock, sleep: c.sleep, ...over });
+    const loopGo = (c, over = {}) => loop({ env: { SEAT_TEST: '1' }, deadlineExtra: DEADLINE_EXTRA, paths, fetchFn, send: async t => sent.push(t), log: () => {}, clock: c.clock, sleep: c.sleep, ...over });
     write([entry({ id: 'L1', show_id: '0013-20261025-003-2', expires_at: '2026-10-26T00:00:00Z' })]);
     fs.writeFileSync(paths.state, '{}');
     mode = 'ok'; remain = 0; sent.length = 0;
