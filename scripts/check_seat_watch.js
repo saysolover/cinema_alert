@@ -157,7 +157,7 @@ const { run, loop } = require('./seat_watch');
   remain = 0;
   r = await go(0);
   assert.strictEqual(read()[0].show_id, '0013-20261025-003-2');
-  assert(sent[0].startsWith('✅ CGV 용산 · 트레인스포팅 · 10/25(일) 19:30 3관 · 지금 잔여 0석 · 2석 이상 풀리면 알림'), sent[0]);
+  assert(sent[0].startsWith('✅ [등록됨] 알림이 아니라 감시 등록 확인입니다.\nCGV 용산 · 트레인스포팅 · 10/25(일) 19:30 3관 · 지금 잔여 0석\n2석 이상으로 늘어나는 순간 [취소표] 알림이 옵니다.'), sent[0]);
   assert.strictEqual(r.confirmations, 1);
 
   // 5분 안에는 다시 조회하지 않는다(먼 회차는 5분 주기)
@@ -170,7 +170,7 @@ const { run, loop } = require('./seat_watch');
   assert.strictEqual(sent.length, 1);
   remain = 3; await go(10);
   assert.strictEqual(sent.length, 2);
-  assert(sent[1].includes('🎟 취소표 알림!') && sent[1].includes('잔여 1석 → 3석') && sent[1].includes('결제 대기') && sent[1].includes('[예매하기](<'), sent[1]);
+  assert(sent[1].includes('🎟 [취소표] 알림!') && sent[1].includes('잔여 1석 → 3석') && sent[1].includes('결제 대기') && sent[1].includes('[예매하기](<'), sent[1]);
   // 계속 높으면 재알림 없음, 내려갔다가 30분 안에 올라오면 없음, 30분 뒤엔 있음
   remain = 3; await go(15);
   remain = 0; await go(20);

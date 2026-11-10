@@ -157,7 +157,7 @@ function nextHealth(prev, failed, errText, nowMs) {
   if (!failed) {
     if (p.consecutive_failures > 0 && p.alerted) {
       const minutes = Math.round((nowMs - Date.parse(p.first_failure_at)) / 60000);
-      messages.push(`✅ 취소표 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
+      messages.push(`✅ [복구] 취소표 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
     }
     return { health: { consecutive_failures: 0 }, messages };
   }
@@ -169,7 +169,7 @@ function nextHealth(prev, failed, errText, nowMs) {
   const stage = p.alert_stage ?? (p.alerted ? 1 : 0);
   let newStage = stage;
   if (due > stage) {
-    messages.push(`⚠️ 취소표 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kstStr(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
+    messages.push(`⚠️ [오류] 취소표 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n첫 실패: ${kstStr(Date.parse(first))}\n마지막 오류: ${errText.slice(0, 200)}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
     alerted = true;
   }
   if (due > stage) newStage = due;

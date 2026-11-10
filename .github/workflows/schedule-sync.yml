@@ -79,5 +79,5 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sS -H 'Content-Type: application/json' \
-            -d "{\"content\":\"⚠️ 시간표 동기화 실패 — 자동완성 목록이 오래될 수 있음\n$RUN_URL\"}" \
+            -d "{\"content\":\"⚠️ [오류] 시간표 동기화 실패 — 자동완성 목록이 오래될 수 있음\n$RUN_URL\"}" \
             "$DISCORD_WEBHOOK" || true

@@ -144,7 +144,7 @@ jobs:
           function buildMessage(movie, label, theater, events, links = [], tags = []) {
             const news = events.filter(e => e.kind === 'new');
             const more = events.filter(e => e.kind === 'more');
-            const title = news.length ? '🎬 예매 오픈!' : '🎟 회차 추가 오픈!';
+            const title = news.length ? '🎬 [예매 오픈]' : '🎟 [회차 추가]';
             const dates = news.length
               ? news.map(e => `${e.date} (${e.count}회)`).join(', ')
               : more.map(e => `${e.date} (+${e.added}회)`).join(', ');
@@ -343,7 +343,7 @@ jobs:
             if (!kind) {
               if (p.consecutive_failures > 0 && p.alerted) {
                 const minutes = Math.round((nowMs - Date.parse(p.first_failure_at)) / 60000);
-                messages.push(`✅ 디트릭스 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
+                messages.push(`✅ [복구] 디트릭스 감시 복구됨 (연속 실패 ${p.consecutive_failures}회, 약 ${minutes}분)`);
               }
               return { health: { consecutive_failures: 0 }, messages };
             }
@@ -362,7 +362,7 @@ jobs:
                 alerted = true;
               }
             } else if (due > stage) {
-              messages.push(`⚠️ 디트릭스 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n${since}\n${last}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
+              messages.push(`⚠️ [오류] 디트릭스 감시 연속 실패 ${n}회 (약 ${n * CRON_MIN}분)\n${since}\n${last}` + (due === 1 ? `\n(계속되면 ${ALERT_AT[1]}회째에 한 번 더 알립니다)` : ''));
               alerted = true;
             }
             if (kind !== 'config' && due > stage) newStage = due;
@@ -431,5 +431,5 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl -sS -H 'Content-Type: application/json' \
-            -d "{\"content\":\"⚠️ 디트릭스 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
+            -d "{\"content\":\"⚠️ [오류] 디트릭스 예매 감시 실패 — 알림이 누락될 수 있음\n$RUN_URL\"}" \
             "$DISCORD_WEBHOOK" || true

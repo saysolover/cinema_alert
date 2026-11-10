@@ -99,10 +99,12 @@ function makeFetchers(env, fetchFn, deadline) {
 
 // ---- 메시지 ----
 const where = (e, s) => `${e.theater} · ${s ? s.title || e.movie : e.movie} · ${dayLabel(e.date)} ${e.time}${s && s.screen ? ` ${s.screen}` : ''}`;
-const msgConfirm = (e, s) => `✅ ${where(e, s)} · 지금 잔여 ${s.remain}석 · ${e.min_seats}석 이상 풀리면 알림\n[예매 페이지](<${s.link}>)`;
-const msgAlert = (e, s, prev) => `🎟 취소표 알림! ${where(e, s)}\n잔여 ${prev}석 → ${s.remain}석 (기준 ${e.min_seats}석 이상)\n[예매하기](<${s.link}>)\n※ 결제 대기 좌석이 풀린 것일 수 있어 바로 예매가 안 될 수 있습니다.${e.note ? `\n메모: ${e.note}` : ''}`;
+const msgConfirm = (e, s) => `✅ [등록됨] 알림이 아니라 감시 등록 확인입니다.\n${where(e, s)} · 지금 잔여 ${s.remain}석\n` +
+  (s.remain >= e.min_seats ? `이미 기준(${e.min_seats}석) 이상이라 지금은 알림이 없습니다. 기준 미만으로 줄었다가 다시 ${e.min_seats}석 이상 생기면 [취소표] 알림이 옵니다.`
+    : `${e.min_seats}석 이상으로 늘어나는 순간 [취소표] 알림이 옵니다.`) + `\n[예매 페이지](<${s.link}>)`;
+const msgAlert = (e, s, prev) => `🎟 [취소표] 알림! ${where(e, s)}\n잔여 ${prev}석 → ${s.remain}석 (기준 ${e.min_seats}석 이상)\n[예매하기](<${s.link}>)\n※ 결제 대기 좌석이 풀린 것일 수 있어 바로 예매가 안 될 수 있습니다.${e.note ? `\n메모: ${e.note}` : ''}`;
 const msgNotFound = (e, r, kind) =>
-  `⚠️ ${where(e)} 회차를 ${kind === 'ambiguous' ? '하나로 정하지 못했습니다(같은 시각 회차가 여럿)' : '찾지 못했습니다'}.\n` +
+  `⚠️ [오류] ${where(e)} 회차를 ${kind === 'ambiguous' ? '하나로 정하지 못했습니다(같은 시각 회차가 여럿)' : '찾지 못했습니다'}.\n` +
   (r.times.length ? `그날 이 영화 회차: ${r.times.slice(0, 15).join(' · ')}\n시각을 맞춰 다시 등록해 주세요.` : '그날 이 영화 상영 회차가 없습니다(예매 오픈 전이거나 날짜·영화 이름 확인이 필요합니다). 열리면 자동으로 다시 찾습니다.');
 
 // ---- 실행 ----
@@ -155,7 +157,7 @@ async function run(ctx) {
   for (const e of seats) {
     const t = L.findTheater(theaters, e.theater_key);
     if (!t || !fetchers[t.chain]) {
-      if (e.status !== 'theater_unknown') { e.status = 'theater_unknown'; await notify(`⚠️ ${where(e)}: 영화관 키 "${e.theater_key}"를 감시 대상(theaters.txt)에서 찾지 못했습니다.`); }
+      if (e.status !== 'theater_unknown') { e.status = 'theater_unknown'; await notify(`⚠️ [오류] ${where(e)}: 영화관 키 "${e.theater_key}"를 감시 대상(theaters.txt)에서 찾지 못했습니다.`); }
       continue;
     }
     const st = items[e.id];

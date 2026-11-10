@@ -35,7 +35,7 @@ for (const [name, events] of Object.entries(cases)) {
 }
 // 날짜 줄마다 [예매하기] 링크가 있고, 형식은 `YYYY-MM-DD [예매하기](<url>)`이다.
 assert.deepStrictEqual(sample.new.split('\n').slice(4), ['2026-10-18 [예매하기](<https://d.example/x?d=2026-10-18>)', '2026-10-21 [예매하기](<https://d.example/x?d=2026-10-21>)']);
-assert(sample.more.startsWith('🎟 회차 추가 오픈!'));
+assert(sample.more.startsWith('🎟 [회차 추가]'));
 assert(sample.mixed.includes('추가 오픈: 2026-10-19 (+4회)'));
 assert(sample.many.length <= 1900 && sample.many.includes('상영일: 2026-10-10'));
 // 특별 상영 표기(tags): 상영일 줄 바로 다음 줄에 `표기: ...`로 보이고, 두 워크플로가 같다. 5개까지만, 없으면 줄이 없다.
