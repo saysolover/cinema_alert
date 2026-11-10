@@ -92,8 +92,14 @@ const DEADLINE_EXTRA = 10 * 365 * 24 * 3600 * 1000;
   assert.strictEqual(r.alert, false, '기준(2석) 미만으로 늘면 알리지 않는다');
   r = L.step({ last: 1, checked_at: T }, 2, 2, T + 1);
   assert.deepStrictEqual([r.alert, r.prev], [true, 1], '기준 이상이 되는 순간');
-  assert.strictEqual(L.step({ last: 5, checked_at: T }, 7, 2, T + 1).alert, false, '이미 기준 이상이면 알리지 않는다');
-  assert.strictEqual(L.step({ last: 2, checked_at: T }, 3, 2, T + 1).alert, false, '기준과 같은 석수에서 늘어난 것도 이미 기준 이상');
+  assert.strictEqual(L.step({ last: 5, checked_at: T }, 7, 2, T + 1).alert, true, '기준 이상에서 등록돼도 늘면 알린다');
+  assert.strictEqual(L.step({ last: 2, checked_at: T }, 3, 2, T + 1).alert, true, '기준과 같은 석수에서 늘어도 알린다');
+  {
+    // 4석 등록(기준 1) → 6석 알림 1회 → 8석 무알림 → 4석 복귀 → 5석 재알림
+    const seq = [4, 6, 8, 4, 5, 5]; let st; const got = [];
+    seq.forEach((n, i) => { const x = L.step(st, n, 1, T + i * 3600e3); got.push(x.alert); st = x.next; });
+    assert.deepStrictEqual(got, [false, true, false, false, true, false], '증가 알림은 최저값 복귀 전까지 1회');
+  }
   assert.strictEqual(L.step({ last: 0, alerted_at: T }, 4, 2, T + 29 * 60000).alert, false, '30분 안 중복 없음');
   assert.strictEqual(L.step({ last: 0, alerted_at: T }, 4, 2, T + 31 * 60000).alert, true, '30분 뒤 다시 올라오면 재알림');
 
