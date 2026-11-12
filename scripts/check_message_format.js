@@ -144,6 +144,21 @@ for (const chain of CHAINS) {
   assert(out.length <= 80 + 20 + 300);
   assert.strictEqual(bodyHead('plain\ntext'), 'plain text');
 }
+// ---- 지난 날짜는 'new' 이벤트를 만들지 않는다 (자정 직후 CGV 영등포 11/12 반복 알림 사례) ----
+{
+  for (const c of CHAINS) {
+    const t = fs.readFileSync(`.github/workflows/${c}-booking-watch.yml`, 'utf8').replace(/\r\n/g, '\n');
+    const m = t.match(/^ {10}function evaluate\([\s\S]*?\n {10}\}\n/m);
+    assert(m, `evaluate를 찾지 못함: ${c}`);
+    const evaluate = new Function('GROWTH', `${m[0]}\nreturn evaluate;`)(3);
+    const base = { since: '2026-11-01', dates: { '2026-11-13': 5 } };
+    let r = evaluate(base, { '2026-11-12': 2, '2026-11-13': 5 }, '2026-11-13');
+    assert.strictEqual(r.events.length, 0, `${c}: 지난 날짜가 이벤트를 만듦`);
+    assert(!('2026-11-12' in r.next.dates), `${c}: 지난 날짜가 기준선에 들어감`);
+    r = evaluate(base, { '2026-11-14': 2 }, '2026-11-13');
+    assert.deepStrictEqual(r.events.map(e => e.date), ['2026-11-14'], `${c}: 오늘 이후 새 날짜는 알려야 함`);
+  }
+}
 console.log('OK: 연속 실패 경고(낮/새벽/07시/복구)와 bodyHead가 5개 워크플로에서 같다.');
 if (process.argv.includes('--show')) {
   const ev = cases.mixed;

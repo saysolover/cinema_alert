@@ -86,6 +86,7 @@ jobs:
             const next = entry ? { since: entry.since, dates: { ...entry.dates } } : { since: today, dates: {} };
             const events = [];
             for (const [d, c] of Object.entries(cur)) {
+              if (d < today) continue; // 자정을 넘겨 잠깐 잡힌 지난 날짜는 알리지 않는다(바로 지워져 매번 'new'가 됨)
               const p = next.dates[d];
               if (c <= 0) { delete next.dates[d]; continue; }
               if (p === undefined) {
