@@ -13,7 +13,7 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
+    "consecutive_failures": 2,
     "first_failure_at": "2026-11-13T05:00:45.862Z",
     "last_kind": "transient",
     "last_error": "movie.do 페이지에서 cgid를 찾지 못함 (페이지 구조 변경 가능성)",
