@@ -35,7 +35,11 @@
     }
   },
   "_health": {
-    "consecutive_failures": 0
+    "consecutive_failures": 1,
+    "first_failure_at": "2026-11-16T17:00:49.545Z",
+    "last_error": "CGV 요청 실패: 비JSON 응답 HTTP 200: [title: Welcome to nginx!] <!DOCTYPE html> <html> <head> <title>Welcome to nginx!</title> <style> html { color-scheme: light dark; } body { width: 35em; margin: 0 auto; f",
+    "alerted": false,
+    "alert_stage": 0
   },
   "트레인스포팅|용산": {
     "since": "2026-10-22",
