@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  actions: read # 직전 실행 결과 조회(2회 연속 실패 때만 알림)
 
 concurrency:
   group: schedule-sync
@@ -66,9 +67,10 @@ jobs:
           git add watch/schedules.json
           git commit -q -m "chore: schedules snapshot"
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          for i in 1 2 3; do
+          # 일시 거부(commit_refs 오류, 403)는 몇 분 안에 풀리므로 10·20·40·80초 간격으로 5회 시도한다
+          for wait in 10 20 40 80 0; do
             git push -q --force origin watch-data && exit 0
-            sleep 3
+            sleep $wait
           done
           exit 1
 
@@ -76,8 +78,12 @@ jobs:
         if: failure()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # 일시 오류 한 번은 다음 실행이 복구하므로, 직전 실행도 실패였을 때(2회 연속)만 알린다. 직전 결과를 못 읽으면 알린다.
+          prev=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/schedule-sync.yml/runs?status=completed&per_page=10"             --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID} and (.conclusion == \"success\" or .conclusion == \"failure\"))][0].conclusion") || prev=""
+          if [ "$prev" = "success" ]; then echo "직전 실행 성공: 2회 연속 실패가 아니라 알림 생략"; exit 0; fi
           curl -sS -H 'Content-Type: application/json' \
             -d "{\"content\":\"⚠️ [오류] 시간표 동기화 실패 — 자동완성 목록이 오래될 수 있음\n$RUN_URL\"}" \
             "$DISCORD_WEBHOOK" || true
