@@ -83,10 +83,6 @@
     }
   },
   "_health": {
-    "consecutive_failures": 1,
-    "first_failure_at": "2026-11-19T07:01:03.184Z",
-    "last_error": "2026-11-26 조회 실패: 비JSON 응답 (HTTP 200): [title: ]  <!DOCTYPE html> <html lang=\"ko\"> <head> <title> </title> <meta charset=\"utf-8\" /> <meta content=\"IE=edge, chrome=1\" http-equiv=\"X-UA-Compatible\" /> <m",
-    "alerted": false,
-    "alert_stage": 0
+    "consecutive_failures": 0
   }
 }
