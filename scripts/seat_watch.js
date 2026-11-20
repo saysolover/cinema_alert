@@ -67,7 +67,11 @@ function makeFetchers(env, fetchFn, deadline) {
       return L.parseCgv(j, t.code);
     },
     async MEGABOX(t, date) {
-      const fd = new URLSearchParams({ masterType: 'movie', movieNo: '', movieNo1: '', firstAt: 'N', playDe: L.compactDate(date), areaCd: t.code });
+      // 지역(areaCd) 조회는 300행에서 잘려 지점이 빠진다 → brchNo가 있으면 지점 단위로 조회. 코드: areaCd|brchNo
+      const [areaCd, brchNo] = t.code.split('|');
+      const fd = new URLSearchParams(brchNo
+        ? { masterType: 'brch', detailType: 'area', brchNo, brchNo1: brchNo, firstAt: 'N', playDe: L.compactDate(date) }
+        : { masterType: 'movie', movieNo: '', movieNo1: '', firstAt: 'N', playDe: L.compactDate(date), areaCd });
       const j = await json('https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do', { method: 'POST', body: fd });
       return L.parseMegabox(j, t.name, L.compactDate(date));
     },

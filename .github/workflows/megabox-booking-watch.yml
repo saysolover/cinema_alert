@@ -178,7 +178,7 @@ jobs:
             const out = [];
             for (const line of loadLines('theaters.txt')) {
               const parts = line.split(',').map(s => s.trim());
-              if (parts[0] === 'MEGABOX' && parts[1] && parts[2]) out.push({ name: parts[1], areaCd: parts[2] });
+              if (parts[0] === 'MEGABOX' && parts[1] && parts[2]) out.push({ name: parts[1], areaCd: parts[2].split('|')[0] }); // 코드: areaCd|brchNo
             }
             return out;
           }
