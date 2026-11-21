@@ -66,6 +66,8 @@ const DEADLINE_EXTRA = 10 * 365 * 24 * 3600 * 1000;
   for (const k of ['CGV:용산', 'CGV,용산', 'CGV,용산,0013', '용산']) assert.strictEqual(L.findTheater(th, k).code, '0013', k);
   const mb = L.parseTheaters('MEGABOX,코엑스,10\nMEGABOX,홍대,10\n');
   assert.strictEqual(L.findTheater(mb, 'MEGABOX,홍대,10').name, '홍대', '코드가 겹쳐도 한 줄 전체로 찾는다');
+  const mb2 = L.parseTheaters('MEGABOX,코엑스,10|1351\nMEGABOX,홍대,10|1212\n');
+  assert.strictEqual(L.findTheater(mb2, 'MEGABOX,코엑스,10').code, '10|1351', 'brchNo 추가 전 키도 이름으로 찾는다');
   assert.strictEqual(L.findTheater(th, 'LOTTE,월드타워,1|0001|1016').name, '월드타워');
   assert.strictEqual(L.findTheater(th, '신도림'), null, '이름만 쓰면 둘 이상일 때 찾지 않는다');
   assert.strictEqual(L.findTheater(th, 'LOTTE:신도림').code, '1|0001|1015');
